@@ -95,6 +95,14 @@ void someFunction() {
 | showModuleName     | Show module name in logs            | true    |
 | queueSize          | Maximum size of async queue         | 1024    |
 
+## Future Work
+
+[]Lockfree queue for reducing contention
+[]Support more output objects(Network, Database, etc)
+[]Support compression for log files
+[]Optimize memory allocation
+[]Add more unit tests
+
 ## License
 
 MIT License

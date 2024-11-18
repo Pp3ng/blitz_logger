@@ -1,7 +1,4 @@
 #include "../src/blitz_logger.hpp"
-#include <thread>
-#include <chrono>
-#include <vector>
 #include <random>
 
 // unified configuration
