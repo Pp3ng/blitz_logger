@@ -1,24 +1,39 @@
-# Compiler settings
+# compiler and flags
 CXX = g++
-CXXFLAGS = -std=c++20 -Wall -Wextra -I./src
+CXXFLAGS = -std=c++20 -Wall -Wextra -O2 -pthread
+INCLUDES = -Isrc
 
-# Source files
-SOURCES = src/blitz_logger.cpp test.cpp
+# source files
+LIB_SOURCE = src/blitz_logger.cpp
+BASIC_TEST = tests/basic_test.cpp
+PERF_TEST = tests/performance_test.cpp    # changed from logger_benchmark.cpp
 
-# Target executable
-TARGET = test
-TEMP = logs
+# targets
+BASIC_TARGET = basic_test
+PERF_TARGET = perf_test
 
-# Default target
-all: $(TARGET)
+# default target
+all: basic performance
 
-# Link the target executable
-$(TARGET): $(SOURCES)
-	$(CXX) $(CXXFLAGS) $(SOURCES) -o $(TARGET)
+# build basic test
+basic: $(LIB_SOURCE) $(BASIC_TEST)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $^ -o $(BASIC_TARGET)
 
-# Clean
+# build performance test
+performance: $(LIB_SOURCE) $(PERF_TEST)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $^ -o $(PERF_TARGET)
+
+# run basic test
+run_basic: basic
+	./$(BASIC_TARGET)
+
+# run performance test
+run_perf: performance
+	./$(PERF_TARGET)
+
+# clean
 clean:
-	rm -f $(TARGET)
-	rm -rf $(TEMP)
+	rm -f $(BASIC_TARGET) $(PERF_TARGET)
+	rm -rf logs benchmark_logs
 
-.PHONY: all clean
+.PHONY: all basic performance run_basic run_perf clean

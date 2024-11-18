@@ -1,4 +1,4 @@
-#include "src/blitz_logger.hpp"
+#include "../src/blitz_logger.hpp"
 #include <thread>
 #include <chrono>
 #include <vector>
@@ -116,36 +116,6 @@ void testErrorHandling()
     }
 }
 
-void testPerformance()
-{
-    Logger::getInstance()->setModuleName("Performance");
-    const int MESSAGE_COUNT = 10000;
-    const int BATCH_SIZE = 100;
-
-    auto start = std::chrono::high_resolution_clock::now();
-
-    for (int batch = 0; batch < MESSAGE_COUNT / BATCH_SIZE; ++batch)
-    {
-        for (int i = 0; i < BATCH_SIZE; ++i)
-        {
-            int messageIndex = batch * BATCH_SIZE + i;
-            LOG_INFO("Performance test message {}", messageIndex);
-        }
-        std::this_thread::sleep_for(std::chrono::microseconds(100));
-    }
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-
-    double msgs_per_sec = (MESSAGE_COUNT * 1000.0) / duration.count();
-    std::cout << "\nPerformance Results:" << std::endl;
-    std::cout << "Total messages: " << MESSAGE_COUNT << std::endl;
-    std::cout << "Total time: " << duration.count() << "ms" << std::endl;
-    std::cout << "Messages per second: " << msgs_per_sec << std::endl;
-}
-
 auto main(void) -> int
 {
     try
@@ -174,7 +144,6 @@ auto main(void) -> int
         testErrorHandling();
         sleep_ms(100);
 
-        testPerformance();
         sleep_ms(100);
 
         Logger::getInstance()->setModuleName("Congratulations");
