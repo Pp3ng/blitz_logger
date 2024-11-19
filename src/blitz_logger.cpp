@@ -5,38 +5,7 @@
 // default constructor
 Logger::Logger() : config(Config{}) // default configuration
 {
-
-    try
-    {
-        // create log directory if not exists
-        if (!std::filesystem::exists(config.logDir))
-        {
-            std::filesystem::create_directories(config.logDir);
-        }
-
-        // open initial log file
-        if (config.fileOutput)
-        {
-            std::string filename = std::format("{}/{}.log", config.logDir, config.filePrefix);
-            logFile.open(filename, std::ios::app);
-            if (!logFile)
-            {
-                throw std::runtime_error(std::format("Failed to open log file: {}", filename));
-            }
-        }
-
-        // start processing thread
-        loggerThread = std::jthread([this](std::stop_token st)
-                                    { processLogs(st); });
-
-        // log initial message
-        log(std::source_location::current(), Level::INFO, "Logger initialized");
-    }
-    catch (const std::exception &e)
-    {
-        std::cerr << "Failed to initialize logger: " << e.what() << std::endl;
-        throw;
-    }
+    running = true;
 }
 
 void Logger::processLogs(std::stop_token st)
@@ -341,7 +310,13 @@ void Logger::initialize(const Config &cfg)
     std::call_once(initFlag, [&cfg]()
                    {
         instance = std::unique_ptr<Logger>(new Logger());
-        instance->configure(cfg); });
+        instance->configure(cfg); // configure logger
+        
+        instance->loggerThread = std::jthread([instance = instance.get()](std::stop_token st) {
+            instance->processLogs(st);
+        });
+        
+        instance->log(std::source_location::current(), Level::INFO, "Logger initialized"); });
 }
 
 void Logger::configure(const Config &cfg)
@@ -370,7 +345,7 @@ void Logger::configure(const Config &cfg)
             throw std::runtime_error(std::format("Failed to open log file: {}", filename));
         }
 
-        currentFileSize = 0;
+        currentFileSize = std::filesystem::file_size(filename);
     }
 }
 

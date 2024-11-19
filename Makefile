@@ -6,14 +6,16 @@ INCLUDES = -Isrc
 # source files
 LIB_SOURCE = src/blitz_logger.cpp
 BASIC_TEST = tests/basic_test.cpp
-PERF_TEST = tests/performance_test.cpp    # changed from logger_benchmark.cpp
+PERF_TEST = tests/performance_test.cpp
+INTEGRITY_TEST = tests/integrity_test.cpp
 
 # targets
 BASIC_TARGET = basic_test
 PERF_TARGET = perf_test
+INTEGRITY_TARGET = integrity_test
 
 # default target
-all: basic performance
+all: basic performance integrity
 
 # build basic test
 basic: $(LIB_SOURCE) $(BASIC_TEST)
@@ -23,6 +25,10 @@ basic: $(LIB_SOURCE) $(BASIC_TEST)
 performance: $(LIB_SOURCE) $(PERF_TEST)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $^ -o $(PERF_TARGET)
 
+# build integrity test
+integrity: $(LIB_SOURCE) $(INTEGRITY_TEST)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $^ -o $(INTEGRITY_TARGET)
+
 # run basic test
 run_basic: basic
 	./$(BASIC_TARGET)
@@ -31,9 +37,13 @@ run_basic: basic
 run_perf: performance
 	./$(PERF_TARGET)
 
+# run integrity test
+run_integrity: integrity
+	./$(INTEGRITY_TARGET)
+
 # clean
 clean:
-	rm -f $(BASIC_TARGET) $(PERF_TARGET)
-	rm -rf logs benchmark_logs
+	rm -f $(BASIC_TARGET) $(PERF_TARGET) $(INTEGRITY_TARGET)
+	rm -rf test_logs
 
-.PHONY: all basic performance run_basic run_perf clean
+.PHONY: all basic performance integrity run_basic run_perf run_integrity clean

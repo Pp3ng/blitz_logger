@@ -1,4 +1,4 @@
-#include "../src/blitz_logger.hpp"
+#include "blitz_logger.hpp"
 
 // helper function: calculate messages per second
 double calculateThroughput(size_t messageCount, double durationSeconds)
@@ -80,8 +80,8 @@ int main()
 {
     // configure logger
     Logger::Config cfg;
-    cfg.logDir = "benchmark_logs";
-    cfg.filePrefix = "benchmark";
+    cfg.logDir = "test_logs";
+    cfg.filePrefix = "performance_test";
     cfg.maxFileSize = 100 * 1024 * 1024; // 100MB
     cfg.maxFiles = 5;
     cfg.consoleOutput = false; // disable console output for more accurate performance testing

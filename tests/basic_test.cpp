@@ -1,4 +1,4 @@
-#include "../src/blitz_logger.hpp"
+#include "blitz_logger.hpp"
 #include <random>
 
 // unified configuration
@@ -7,6 +7,8 @@ Logger::Config getTestConfig()
     Logger::Config config;
     config.maxFileSize = 5 * 1024 * 1024; // 5mb
     config.maxFiles = 3;
+    config.logDir = "test_logs";
+    config.filePrefix = "basic_test";
     config.minLevel = Logger::Level::TRACE;
     config.consoleOutput = true;
     config.fileOutput = true;
