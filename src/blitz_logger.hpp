@@ -48,7 +48,7 @@ public:
         bool showThreadId{true};              // show thread id in logs
         bool showSourceLocation{true};        // show source location in logs
         bool showModuleName{true};            // show module name in logs
-        bool showFullPath{false};            // show full file paths in logs
+        bool showFullPath{false};             // show full file paths in logs
         size_t queueSize{1024};               // log message queue size
     };
 
@@ -107,20 +107,19 @@ private:
     };
 
     // member variables
+    Config config;
     std::queue<LogMessage> messageQueue;
     mutable std::shared_mutex mutex;
     std::ofstream logFile;
     std::condition_variable_any queueCV;
     std::jthread loggerThread;
-    std::atomic<bool> running{true};
+    std::atomic<bool> running;
     size_t currentFileSize{0};
-    Config config;
     static inline std::unique_ptr<Logger> instance;
     static inline std::once_flag initFlag;
 
     // private member functions
     Logger();
-    void initLogger();
     void processLogs(std::stop_token st);
     void writeLogMessage(const LogMessage &msg);
     void rotateLogFileIfNeeded();

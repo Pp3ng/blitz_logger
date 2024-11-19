@@ -3,9 +3,8 @@
 #include <sstream>
 
 // default constructor
-Logger::Logger() : config(Config{}) // default configuration
+Logger::Logger() : config(Config{}), running(true)
 {
-    running = true;
 }
 
 void Logger::processLogs(std::stop_token st)
