@@ -17,6 +17,7 @@ Logger::Config getTestConfig()
     config.showThreadId = false;
     config.showSourceLocation = true;
     config.showModuleName = true;
+    config.showFullPath = true;
     return config;
 }
 

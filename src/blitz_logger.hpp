@@ -48,6 +48,7 @@ public:
         bool showThreadId{true};              // show thread id in logs
         bool showSourceLocation{true};        // show source location in logs
         bool showModuleName{true};            // show module name in logs
+        bool showFullPath{false};            // show full file paths in logs
         size_t queueSize{1024};               // log message queue size
     };
 

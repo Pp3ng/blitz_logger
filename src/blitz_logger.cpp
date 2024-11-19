@@ -148,47 +148,71 @@ void Logger::writeLogMessage(const LogMessage &msg)
 
 std::string Logger::formatLogMessage(const LogMessage &msg)
 {
-    std::ostringstream oss;
+    constexpr size_t ESTIMATED_SIZE = 256;
+    std::string result;
+    result.reserve(ESTIMATED_SIZE);
 
-    // timestamp
     if (config.showTimestamp)
     {
+        char timestamp[32];
         auto time = std::chrono::system_clock::to_time_t(msg.timestamp);
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                       msg.timestamp.time_since_epoch()) %
                   1000;
-
-        char timestamp[32];
         std::strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S",
                       std::localtime(&time));
-        oss << '[' << timestamp << '.'
-            << std::setfill('0') << std::setw(3) << ms.count() << "] ";
+
+        result.append("[");
+        result.append(timestamp);
+        result.append(".");
+        result.append(std::to_string(ms.count()));
+        result.append("] ");
     }
 
-    // level
-    oss << '[' << getLevelString(msg.level) << "] ";
+    static constexpr std::string_view LEVEL_PREFIX = "[";
+    static constexpr std::string_view LEVEL_SUFFIX = "] ";
 
-    // thread id
+    result.append(LEVEL_PREFIX);
+    result.append(getLevelString(msg.level));
+    result.append(LEVEL_SUFFIX);
+
     if (config.showThreadId)
     {
-        oss << "[T-" << msg.context.threadId << "] ";
+        result.append("[T-");
+        result.append(std::to_string(std::hash<std::thread::id>{}(msg.context.threadId)));
+        result.append("] ");
     }
 
-    // module name
     if (config.showModuleName && !msg.context.module.empty())
     {
-        oss << '[' << msg.context.module << "] ";
+        result.append("[");
+        result.append(msg.context.module);
+        result.append("] ");
     }
 
-    // source location
     if (config.showSourceLocation)
     {
-        oss << '[' << msg.context.file << ':' << msg.context.line << "] ";
+        result.append("[");
+        if (config.showFullPath)
+        {
+            result.append(msg.context.file);
+        }
+        else
+        {
+            std::string_view file(msg.context.file);
+            if (auto pos = file.find_last_of("/\\"); pos != std::string_view::npos)
+            {
+                file = file.substr(pos + 1);
+            }
+            result.append(file);
+        }
+        result.append(":");
+        result.append(std::to_string(msg.context.line));
+        result.append("] ");
     }
-    // message
-    oss << msg.message;
 
-    return oss.str();
+    result.append(msg.message);
+    return result;
 }
 
 void Logger::rotateLogFileIfNeeded()

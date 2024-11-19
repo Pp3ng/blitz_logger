@@ -93,6 +93,7 @@ void someFunction() {
 | showThreadId       | Show thread ID in logs              | true    |
 | showSourceLocation | Show source file and line           | true    |
 | showModuleName     | Show module name in logs            | true    |
+| showFullPath       | Show full file path in logs         | false   |
 | queueSize          | Maximum size of async queue         | 1024    |
 
 ## Future Work
