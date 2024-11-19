@@ -86,7 +86,7 @@ int main()
     cfg.maxFiles = 5;
     cfg.consoleOutput = false; // disable console output for more accurate performance testing
 
-    auto logger = Logger::getInstance(cfg);
+    Logger::initialize(cfg);
 
     // run tests
     const size_t SINGLE_THREAD_MESSAGES = 100000;

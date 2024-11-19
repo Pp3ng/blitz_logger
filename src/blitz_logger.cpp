@@ -5,17 +5,7 @@
 // default constructor
 Logger::Logger() : config(Config{}) // default configuration
 {
-    initLogger();
-}
 
-// constructor with configuration
-Logger::Logger(const Config &cfg) : config(cfg) // custom configuration
-{
-    initLogger();
-}
-
-void Logger::initLogger()
-{
     try
     {
         // create log directory if not exists
@@ -340,15 +330,18 @@ std::string_view Logger::getLevelString(Level level)
 
 Logger *Logger::getInstance()
 {
-    std::call_once(initFlag, []()
-                   { instance = std::unique_ptr<Logger>(new Logger()); });
+    if (!instance)
+    {
+        throw std::runtime_error("Logger not initialized");
+    }
     return instance.get();
 }
-Logger *Logger::getInstance(const Config &cfg)
+void Logger::initialize(const Config &cfg)
 {
     std::call_once(initFlag, [&cfg]()
-                   { instance = std::unique_ptr<Logger>(new Logger(cfg)); });
-    return instance.get();
+                   {
+        instance = std::unique_ptr<Logger>(new Logger());
+        instance->configure(cfg); });
 }
 
 void Logger::configure(const Config &cfg)

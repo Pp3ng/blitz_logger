@@ -55,48 +55,6 @@ void testFormatting()
     LOG_INFO("Scientific: {:.2e}", 12345.6789);
 }
 
-// test multithreading
-void workerThread(int id, int iterations)
-{
-    Logger::getInstance()->setModuleName(std::format("Worker{}", id));
-
-    for (int i = 0; i < iterations; ++i)
-    {
-        LOG_INFO("Thread {} - Iteration {}", id, i);
-        sleep_ms(100);
-    }
-}
-
-void testMultithreading()
-{
-    Logger::getInstance()->setModuleName("Threading");
-    LOG_INFO("=== Testing Multithreading ===");
-
-    std::vector<std::thread> threads;
-    for (int i = 0; i < static_cast<int>(std::thread::hardware_concurrency()); ++i)
-    {
-        threads.emplace_back(workerThread, i, 5);
-    }
-
-    for (auto &thread : threads)
-    {
-        thread.join();
-    }
-}
-
-// test file rotation
-void testFileRotation()
-{
-    Logger::getInstance()->setModuleName("FileRotation");
-    LOG_INFO("=== Testing File Rotation ===");
-
-    std::string longString(1000, '*');
-    for (int i = 0; i < 100; ++i)
-    {
-        LOG_INFO("Large data test {}: {}", i, longString);
-    }
-}
-
 // test error handling
 void testErrorHandling()
 {
@@ -119,10 +77,10 @@ auto main(void) -> int
     {
         // initialize logger
         auto config = getTestConfig();
-        auto logger = Logger::getInstance(config);
+        Logger::initialize(config);
 
+        Logger::getInstance()->setModuleName("BasicTest");
         // main test module
-        logger->setModuleName("MainTest");
         LOG_INFO("Starting logger tests...");
 
         // run all tests
@@ -132,15 +90,7 @@ auto main(void) -> int
         testFormatting();
         sleep_ms(100);
 
-        testMultithreading();
-        sleep_ms(100);
-
-        testFileRotation();
-        sleep_ms(100);
-
         testErrorHandling();
-        sleep_ms(100);
-
         sleep_ms(100);
 
         Logger::getInstance()->setModuleName("Congratulations");

@@ -119,7 +119,6 @@ private:
 
     // private member functions
     Logger();
-    explicit Logger(const Config &cfg);
     void initLogger();
     void processLogs(std::stop_token st);
     void writeLogMessage(const LogMessage &msg);
@@ -131,7 +130,7 @@ private:
 
 public:
     static Logger *getInstance();
-    static Logger *getInstance(const Config &cfg);
+    static void initialize(const Config &cfg);
     static void destroyInstance();
 
     void configure(const Config &cfg);
