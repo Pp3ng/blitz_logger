@@ -351,13 +351,16 @@ void Logger::configure(const Config &cfg)
 {
     std::unique_lock lock(mutex);
 
+    // close the current log file if open
     if (logFile.is_open())
     {
         logFile.close();
     }
 
+    // update the configuration
     config = cfg;
 
+    // reopen the log file with the new configuration
     if (config.fileOutput)
     {
         if (!std::filesystem::exists(config.logDir))
@@ -375,6 +378,8 @@ void Logger::configure(const Config &cfg)
 
         currentFileSize = std::filesystem::file_size(filename);
     }
+    // notify other threads that the configuration has been updated
+    notEmpty.notify_all();
 }
 
 void Logger::setLogLevel(Level level)
