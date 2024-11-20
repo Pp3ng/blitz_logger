@@ -43,7 +43,7 @@ A modern, thread-safe, and feature-rich C++ logging library designed for high pe
 
 int main() {
     // Use default configuration
-    auto logger = Logger::getInstance();
+    Logger::getInstance();
 
     // Log messages with different levels
     LOG_INFO("Application started");
@@ -65,7 +65,9 @@ config.maxFiles = 3;
 config.minLevel = Logger::Level::DEBUG;
 config.useColors = true;
 
-auto logger = Logger::getInstance(config);
+Logger::initialize(config);
+
+LOG_INFO("Custom configuration applied");
 ```
 
 ### Module-based Logging
@@ -94,7 +96,6 @@ void someFunction() {
 | showSourceLocation | Show source file and line           | true    |
 | showModuleName     | Show module name in logs            | true    |
 | showFullPath       | Show full file path in logs         | false   |
-| queueSize          | Maximum size of async queue         | 1024    |
 
 ## Future Work
 

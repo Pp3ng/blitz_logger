@@ -11,7 +11,6 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
-#include <queue>
 #include <shared_mutex>
 #include <source_location>
 #include <string>
@@ -49,7 +48,6 @@ public:
         bool showSourceLocation{true};        // show source location in logs
         bool showModuleName{true};            // show module name in logs
         bool showFullPath{false};             // show full file paths in logs
-        size_t queueSize{1024};               // log message queue size
     };
 
 private:
@@ -89,8 +87,51 @@ private:
         Context context;
         std::chrono::system_clock::time_point timestamp;
 
+        LogMessage() = default;
+
         LogMessage(std::string msg, Level lvl, Context ctx)
             : message(std::move(msg)), level(lvl), context(std::move(ctx)), timestamp(std::chrono::system_clock::now()) {}
+    };
+
+    //ring buffer
+    static constexpr size_t BUFFER_SIZE = 16384; // 2^14
+
+    struct RingBuffer
+    {
+        std::array<LogMessage, BUFFER_SIZE> messages;
+        size_t head = 0;
+        size_t tail = 0;
+
+        bool full() const
+        {
+            return ((tail + 1) & (BUFFER_SIZE - 1)) == head;
+        }
+
+        bool empty() const
+        {
+            return head == tail;
+        }
+
+        void push(LogMessage &&msg)
+        {
+            messages[tail] = std::move(msg);
+            tail = (tail + 1) & (BUFFER_SIZE - 1);
+        }
+
+        LogMessage &front()
+        {
+            return messages[head];
+        }
+
+        void pop()
+        {
+            head = (head + 1) & (BUFFER_SIZE - 1);
+        }
+
+        size_t size() const
+        {
+            return (tail - head) & (BUFFER_SIZE - 1);
+        }
     };
 
     // terminal colors
@@ -108,10 +149,11 @@ private:
 
     // member variables
     Config config;
-    std::queue<LogMessage> messageQueue;
+    RingBuffer buffer;
     mutable std::shared_mutex mutex;
     std::ofstream logFile;
-    std::condition_variable_any queueCV;
+    std::condition_variable_any notFull;
+    std::condition_variable_any notEmpty;
     std::jthread loggerThread;
     std::atomic<bool> running;
     size_t currentFileSize{0};
@@ -137,6 +179,7 @@ public:
     void setLogLevel(Level level);
     void setModuleName(std::string_view module);
     friend std::unique_ptr<Logger> std::make_unique<Logger>();
+
     template <typename... Args>
     void log(const std::source_location &loc, Level level, std::format_string<Args...> fmt, Args &&...args)
     {
@@ -150,13 +193,13 @@ public:
 
             {
                 std::unique_lock lock(mutex);
-                while (messageQueue.size() >= config.queueSize)
+                while (buffer.full())
                 {
-                    queueCV.wait(lock);
+                    notFull.wait(lock);
                 }
-                messageQueue.emplace(std::move(message), level, std::move(ctx));
+                buffer.push(LogMessage(std::move(message), level, std::move(ctx)));
             }
-            queueCV.notify_one();
+            notEmpty.notify_one();
         }
         catch (const std::exception &e)
         {

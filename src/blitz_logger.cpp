@@ -9,11 +9,9 @@ Logger::Logger() : config(Config{}), running(true)
 
 void Logger::processLogs(std::stop_token st)
 {
-    constexpr size_t BUFFER_SIZE = 10000;
-    std::vector<LogMessage> currentBuffer;
-    std::vector<LogMessage> processingBuffer;
-    currentBuffer.reserve(BUFFER_SIZE);
-    processingBuffer.reserve(BUFFER_SIZE);
+    constexpr size_t BATCH_SIZE = 1024;
+    std::vector<LogMessage> batchBuffer;
+    batchBuffer.reserve(BATCH_SIZE);
 
     std::string fileBuffer;
     std::string consoleBuffer;
@@ -65,46 +63,52 @@ void Logger::processLogs(std::stop_token st)
         }
 
         buffer.clear();
-        queueCV.notify_all();
+        notFull.notify_all(); // notify has space in buffer
     };
 
     while (!st.stop_requested())
     {
-        std::vector<LogMessage> tempBuffer;
         {
             std::unique_lock lock(mutex);
             auto pred = [this]
-            { return !messageQueue.empty() || !running; };
+            { return !buffer.empty() || !running; };
 
-            if (queueCV.wait_for(lock, std::chrono::milliseconds(1), pred))
+            if (notEmpty.wait_for(lock, std::chrono::milliseconds(1), pred))
             {
-                tempBuffer.reserve(messageQueue.size());
-                while (!messageQueue.empty())
+                while (!buffer.empty() && batchBuffer.size() < BATCH_SIZE)
                 {
-                    tempBuffer.push_back(std::move(messageQueue.front()));
-                    messageQueue.pop();
+                    batchBuffer.push_back(std::move(buffer.front()));
+                    buffer.pop();
                 }
             }
         }
 
-        if (!tempBuffer.empty())
+        if (!batchBuffer.empty())
         {
-            processBuffer(tempBuffer);
+            processBuffer(batchBuffer);
+            batchBuffer.clear();
         }
     }
 
-    // remaining messages
+    // remaining logs
     {
         std::unique_lock lock(mutex);
-        std::vector<LogMessage> remainingMessages;
-        while (!messageQueue.empty())
+        while (!buffer.empty())
         {
-            remainingMessages.push_back(std::move(messageQueue.front()));
-            messageQueue.pop();
+            batchBuffer.push_back(std::move(buffer.front()));
+            buffer.pop();
+            if (batchBuffer.size() >= BATCH_SIZE)
+            {
+                lock.unlock();
+                processBuffer(batchBuffer);
+                batchBuffer.clear();
+                lock.lock();
+            }
         }
-        if (!remainingMessages.empty())
+        if (!batchBuffer.empty())
         {
-            processBuffer(remainingMessages);
+            lock.unlock();
+            processBuffer(batchBuffer);
         }
     }
 }
@@ -393,7 +397,7 @@ Logger::~Logger()
     try
     {
         running = false;
-        queueCV.notify_all();
+        notEmpty.notify_all(); // notify to stop
         if (loggerThread.joinable())
         {
             loggerThread.request_stop();
