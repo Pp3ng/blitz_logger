@@ -287,19 +287,21 @@ const char *Logger::getLevelColor(Level level) const
     switch (level)
     {
     case Level::TRACE:
-        return COLORS[7]; // white
+        return COLORS[COLOR_TRACE];
     case Level::DEBUG:
-        return COLORS[6]; // cyan
+        return COLORS[COLOR_DEBUG];
     case Level::INFO:
-        return COLORS[3]; // green
+        return COLORS[COLOR_INFO];
     case Level::WARNING:
-        return COLORS[4]; // yellow
+        return COLORS[COLOR_WARNING];
     case Level::ERROR:
-        return COLORS[2]; // red
+        return COLORS[COLOR_ERROR];
     case Level::FATAL:
-        return "\033[1;31m"; // bold red
+        return COLORS[COLOR_FATAL];
+    case Level::STEP:
+        return COLORS[COLOR_STEP];
     default:
-        return COLORS[0]; // reset
+        return COLORS[COLOR_RESET];
     }
 }
 
@@ -319,6 +321,8 @@ std::string_view Logger::getLevelString(Level level)
         return "ERROR";
     case Level::FATAL:
         return "FATAL";
+    case Level::STEP:
+        return "STEP";
     default:
         return "UNKNOWN";
     }

@@ -4,7 +4,7 @@ A modern, thread-safe, and feature-rich C++ logging library designed for high pe
 
 ## Features
 
-- **Multiple Log Levels**: TRACE, DEBUG, INFO, WARNING, ERROR, and FATAL
+- **Multiple Log Levels**: TRACE, DEBUG, INFO, WARNING, ERROR, FATAL and STEP
 - **Asynchronous Logging**: Non-blocking logging operations with background processing
 - **File Management**:
   - Automatic log file rotation based on file size

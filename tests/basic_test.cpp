@@ -21,16 +21,11 @@ Logger::Config getTestConfig()
     return config;
 }
 
-// helper function
-void sleep_ms(int ms)
-{
-    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-}
-
 // test log levels
 void testLogLevels()
 {
     Logger::getInstance()->setModuleName("LogLevels");
+    LOG_STEP(1, "=== Testing Log Levels ===");
     LOG_INFO("=== Testing Log Levels ===");
     LOG_TRACE("This is a TRACE message");
     LOG_DEBUG("This is a DEBUG message");
@@ -38,14 +33,15 @@ void testLogLevels()
     LOG_WARNING("This is a WARNING message");
     LOG_ERROR("This is an ERROR message");
     LOG_FATAL("This is a FATAL message");
+
+    LOG_INFO("LogLevels test complete\n");
 }
 
 // test formatting
 void testFormatting()
 {
     Logger::getInstance()->setModuleName("Formatting");
-    LOG_INFO("=== Testing Formatting ===");
-
+    LOG_STEP(2, "=== Testing Formatting ===");
     // basic type formatting
     LOG_INFO("Integer: {}", 42);
     LOG_INFO("Float: {:.2f}", 3.14159);
@@ -56,14 +52,15 @@ void testFormatting()
     LOG_INFO("Right aligned: |{:>10}|", "right");
     LOG_INFO("Hexadecimal: 0x{:X}", 255);
     LOG_INFO("Scientific: {:.2e}", 12345.6789);
+
+    LOG_INFO("Formatting test complete\n");
 }
 
 // test error handling
 void testErrorHandling()
 {
     Logger::getInstance()->setModuleName("ErrorHandling");
-    LOG_INFO("=== Testing Error Handling ===");
-
+    LOG_STEP(3, "=== Testing Error Handling ===");
     try
     {
         throw std::runtime_error("Test exception");
@@ -84,17 +81,14 @@ auto main(void) -> int
 
         Logger::getInstance()->setModuleName("BasicTest");
         // main test module
-        LOG_INFO("Starting logger tests...");
+        LOG_INFO("Starting basic tests...\n");
 
         // run all tests
         testLogLevels();
-        sleep_ms(100);
 
         testFormatting();
-        sleep_ms(100);
 
         testErrorHandling();
-        sleep_ms(100);
 
         Logger::getInstance()->setModuleName("Congratulations");
         LOG_INFO("All tests completed successfully");

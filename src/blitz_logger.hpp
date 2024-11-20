@@ -29,7 +29,8 @@ public:
         INFO,
         WARNING,
         ERROR,
-        FATAL
+        FATAL,
+        STEP
     };
 
     // logger configuration
@@ -170,17 +171,27 @@ private:
     };
 
     // terminal colors
-    static constexpr std::array<const char *, 9> COLORS = {
-        "\033[0m",  // reset
-        "\033[30m", // black
-        "\033[31m", // red
-        "\033[32m", // green
-        "\033[33m", // yellow
-        "\033[34m", // blue
-        "\033[35m", // magenta
-        "\033[36m", // cyan
-        "\033[37m"  // white
+    static constexpr std::array<const char *, 10> COLORS = {
+        "\033[0m",   // reset
+        "\033[30m",  // black
+        "\033[31m",  // red
+        "\033[32m",  // green
+        "\033[33m",  // yellow
+        "\033[34m",  // blue
+        "\033[35m",  // magenta
+        "\033[36m",  // cyan
+        "\033[37m",  // white
+        "\033[1;31m" // bright red
     };
+
+    static constexpr size_t COLOR_RESET = 0;   // reset
+    static constexpr size_t COLOR_TRACE = 7;   // cyan
+    static constexpr size_t COLOR_DEBUG = 6;   // magenta
+    static constexpr size_t COLOR_INFO = 3;    // green
+    static constexpr size_t COLOR_WARNING = 4; // yellow
+    static constexpr size_t COLOR_ERROR = 2;   // red
+    static constexpr size_t COLOR_FATAL = 9;   // bright red
+    static constexpr size_t COLOR_STEP = 5;    // blue
 
     // member variables
     Config config;
@@ -278,6 +289,14 @@ public:
         log(loc, Level::FATAL, fmt, std::forward<Args>(args)...);
     }
 
+    template <typename... Args>
+    void step(int stepNum, const std::source_location &loc, std::format_string<Args...> fmt, Args &&...args)
+    {
+        log(loc, Level::STEP, "[Step {}] {}",
+            stepNum,
+            std::format(fmt, std::forward<Args>(args)...));
+    }
+
     ~Logger();
 
     Logger(const Logger &) = delete;
@@ -293,3 +312,4 @@ public:
 #define LOG_WARNING(...) Logger::getInstance()->warning(std::source_location::current(), __VA_ARGS__)
 #define LOG_ERROR(...) Logger::getInstance()->error(std::source_location::current(), __VA_ARGS__)
 #define LOG_FATAL(...) Logger::getInstance()->fatal(std::source_location::current(), __VA_ARGS__)
+#define LOG_STEP(num, ...) Logger::getInstance()->step(num, std::source_location::current(), __VA_ARGS__)
