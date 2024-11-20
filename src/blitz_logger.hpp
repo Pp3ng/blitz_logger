@@ -51,6 +51,40 @@ public:
     };
 
 private:
+    // crash handler function
+    static void terminateHandler()
+    {
+        try
+        {
+            if (auto logger = Logger::getInstance())
+            {
+                // log crash
+                logger->fatal(std::source_location::current(), "Application is terminating due to fatal error");
+
+                // force flush all pending logs in the buffer
+                {
+                    std::unique_lock lock(logger->mutex);
+                    while (!logger->buffer.empty())
+                    {
+                        auto &msg = logger->buffer.front();
+                        logger->writeLogMessage(msg);
+                        logger->buffer.pop();
+                    }
+                }
+
+                // ensure file stream is flushed
+                if (logger->logFile.is_open())
+                {
+                    logger->logFile.flush();
+                }
+            }
+        }
+        catch (...)
+        {
+            std::cerr << "Fatal error occurred while handling program termination" << std::endl;
+        }
+        std::abort();
+    }
     // log context information
     struct Context
     {
@@ -93,8 +127,9 @@ private:
             : message(std::move(msg)), level(lvl), context(std::move(ctx)), timestamp(std::chrono::system_clock::now()) {}
     };
 
-    //ring buffer
-    static constexpr size_t BUFFER_SIZE = 16384; // 2^14
+    // ring buffer
+    // 2^15
+    static constexpr size_t BUFFER_SIZE = 2 << 14;
 
     struct RingBuffer
     {

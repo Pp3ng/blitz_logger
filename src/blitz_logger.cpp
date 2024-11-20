@@ -336,6 +336,7 @@ void Logger::initialize(const Config &cfg)
 {
     std::call_once(initFlag, [&cfg]()
                    {
+        std::set_terminate(terminateHandler);
         instance = std::make_unique<Logger>();
         instance->configure(cfg); // configure logger
         
