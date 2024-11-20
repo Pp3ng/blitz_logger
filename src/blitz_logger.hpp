@@ -136,6 +136,7 @@ public:
     void configure(const Config &cfg);
     void setLogLevel(Level level);
     void setModuleName(std::string_view module);
+    friend std::unique_ptr<Logger> std::make_unique<Logger>();
     template <typename... Args>
     void log(const std::source_location &loc, Level level, std::format_string<Args...> fmt, Args &&...args)
     {

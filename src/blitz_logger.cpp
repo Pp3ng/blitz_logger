@@ -332,7 +332,7 @@ void Logger::initialize(const Config &cfg)
 {
     std::call_once(initFlag, [&cfg]()
                    {
-        instance = std::unique_ptr<Logger>(new Logger());
+        instance = std::make_unique<Logger>();
         instance->configure(cfg); // configure logger
         
         instance->loggerThread = std::jthread([instance = instance.get()](std::stop_token st) {
