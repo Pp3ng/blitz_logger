@@ -19,14 +19,23 @@ void singleThreadTest(size_t messageCount)
 {
     auto logger = Logger::getInstance();
     logger->setLogLevel(Logger::Level::INFO);
+    logger->setModuleName("SingleThread");
 
     std::cout << "\n=== single thread test (" << messageCount << " messages) ===" << std::endl;
+
+    // warmup
+    for (size_t i = 0; i < 1000; ++i)
+    {
+        LOG_INFO("warmup message #{}", i);
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     auto start = std::chrono::high_resolution_clock::now();
 
     for (size_t i = 0; i < messageCount; ++i)
     {
-        LOG_INFO("test message #{}: this is a performance test log message", i);
+        LOG_INFO("test message #{}", i);
     }
 
     auto end = std::chrono::high_resolution_clock::now();
@@ -35,6 +44,8 @@ void singleThreadTest(size_t messageCount)
     double throughput = calculateThroughput(messageCount, duration);
     std::cout << "total time: " << duration << " seconds" << std::endl;
     std::cout << "throughput: " << formatNumber(throughput) << " messages/sec" << std::endl;
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
 
 // multi thread test
@@ -47,6 +58,21 @@ void multiThreadTest(size_t messageCount, size_t threadCount)
               << messageCount << " messages per thread) ===" << std::endl;
 
     std::vector<std::thread> threads;
+    threads.reserve(threadCount);
+
+    // warmup{
+    {
+        std::thread warmup([logger]()
+                           {
+            logger->setModuleName("Warmup");
+            for (size_t i = 0; i < 1000; ++i) {
+                LOG_INFO("warmup message #{}", i);
+            } });
+        warmup.join();
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
     auto start = std::chrono::high_resolution_clock::now();
 
     // start multiple threads
@@ -54,9 +80,9 @@ void multiThreadTest(size_t messageCount, size_t threadCount)
     {
         threads.emplace_back([t, messageCount, logger]()
                              {
-            logger->setModuleName(std::format("thread-{}", t));
+            logger->setModuleName(std::format("Thread-{}", t));
             for (size_t i = 0; i < messageCount; ++i) {
-                LOG_INFO("thread {} test message #{}: this is a performance test log message", t, i);
+                LOG_INFO("thread {} message #{}", t, i);
             } });
     }
 
@@ -73,33 +99,57 @@ void multiThreadTest(size_t messageCount, size_t threadCount)
     double throughput = calculateThroughput(totalMessages, duration);
     std::cout << "total time: " << duration << " seconds" << std::endl;
     std::cout << "total throughput: " << formatNumber(throughput) << " messages/sec" << std::endl;
-    std::cout << "average throughput per thread: " << formatNumber(throughput / threadCount) << " messages/sec" << std::endl;
+    std::cout << "average throughput per thread: " << formatNumber(throughput / threadCount)
+              << " messages/sec" << std::endl;
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
 
 auto main(void) -> int
 {
-    // configure logger
-    Logger::Config cfg;
-    cfg.logDir = "test_logs";
-    cfg.filePrefix = "performance_test";
-    cfg.maxFileSize = 100 * 1024 * 1024; // 100MB
-    cfg.maxFiles = 10;
-    cfg.consoleOutput = false; // disable console output for more accurate performance testing
+    try
+    {
+        // configure logger
+        Logger::Config cfg;
+        cfg.logDir = "test_logs";
+        cfg.filePrefix = "performance_test";
+        cfg.maxFileSize = 100 * 1024 * 1024; // 100MB
+        cfg.maxFiles = 5;
+        cfg.consoleOutput = false; // disable console output for performance
+        cfg.fileOutput = true;
+        cfg.showTimestamp = true;
+        cfg.showThreadId = true;
+        cfg.showSourceLocation = false; // disable for better performance
+        cfg.showModuleName = true;
+        cfg.showFullPath = false;
+        cfg.minLevel = Logger::Level::INFO;
 
-    Logger::initialize(cfg);
+        Logger::initialize(cfg);
 
-    // run tests
-    const size_t SINGLE_THREAD_MESSAGES = 1000000;
-    const size_t MULTI_THREAD_MESSAGES = 500000;
-    const std::vector<size_t> THREAD_COUNTS = {2, 4, 8, 16};
+        // run tests
+        const size_t SINGLE_THREAD_MESSAGES = 1'000'000;
+        const size_t MULTI_THREAD_MESSAGES = 500'000;
+        const std::vector<size_t> THREAD_COUNTS = {2, 4, 8, 16};
 
-    // single thread test
-    singleThreadTest(SINGLE_THREAD_MESSAGES);
+        // single thread test
+        singleThreadTest(SINGLE_THREAD_MESSAGES);
 
-    // multi thread tests (different thread counts)
-    for (size_t threadCount : THREAD_COUNTS)
-        multiThreadTest(MULTI_THREAD_MESSAGES, threadCount);
+        // multi thread tests
+        for (size_t threadCount : THREAD_COUNTS)
+        {
+            multiThreadTest(MULTI_THREAD_MESSAGES, threadCount);
+            // cool down
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
 
-    Logger::destroyInstance();
-    return EXIT_SUCCESS;
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+        Logger::destroyInstance();
+        return EXIT_SUCCESS;
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Test failed: " << e.what() << std::endl;
+        return EXIT_FAILURE;
+    }
 }

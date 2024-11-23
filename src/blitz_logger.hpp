@@ -3,7 +3,6 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -17,6 +16,7 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+#include <cstring>
 
 class Logger
 {
@@ -59,21 +59,15 @@ private:
         {
             if (auto logger = Logger::getInstance())
             {
-                // log crash
-                logger->fatal(std::source_location::current(), "Application is terminating due to fatal error");
+                logger->fatal(std::source_location::current(),
+                              "Application is terminating due to fatal error");
 
-                // force flush all pending logs in the buffer
+                LogMessage msg;
+                while (logger->buffer.pop(msg))
                 {
-                    std::unique_lock lock(logger->mutex);
-                    while (!logger->buffer.empty())
-                    {
-                        auto &msg = logger->buffer.front();
-                        logger->writeLogMessage(msg);
-                        logger->buffer.pop();
-                    }
+                    logger->writeLogMessage(msg);
                 }
 
-                // ensure file stream is flushed
                 if (logger->logFile.is_open())
                 {
                     logger->logFile.flush();
@@ -115,7 +109,7 @@ private:
     };
 
     // log message structure
-    struct LogMessage
+    struct alignas(64) LogMessage
     {
         std::string message;
         Level level;
@@ -124,49 +118,80 @@ private:
 
         LogMessage() = default;
 
+        LogMessage(const LogMessage &) = delete;
+        LogMessage &operator=(const LogMessage &) = delete;
+
+        LogMessage(LogMessage &&) noexcept = default;
+        LogMessage &operator=(LogMessage &&) noexcept = default;
+
         LogMessage(std::string msg, Level lvl, Context ctx)
-            : message(std::move(msg)), level(lvl), context(std::move(ctx)), timestamp(std::chrono::system_clock::now()) {}
+            : message(std::move(msg)), level(lvl), context(std::move(ctx)), timestamp(std::chrono::system_clock::now())
+        {
+        }
+
+        ~LogMessage() = default;
     };
 
-    // ring buffer
-    // 2^16
-    static constexpr size_t BUFFER_SIZE = 2 << 15;
+    // ring buffer implementation
+    static constexpr size_t BUFFER_SIZE = 1 << 17; // 2^17
 
-    struct RingBuffer
+    struct alignas(64) RingBuffer
     {
-        std::array<LogMessage, BUFFER_SIZE> messages;
-        size_t head = 0;
-        size_t tail = 0;
+        alignas(64) std::array<LogMessage, BUFFER_SIZE> messages;
+        alignas(64) std::atomic<size_t> head{0};
+        alignas(64) std::atomic<size_t> tail{0};
 
         bool full() const
         {
-            return ((tail + 1) & (BUFFER_SIZE - 1)) == head;
+            auto current_tail = tail.load(std::memory_order_relaxed);
+            auto next_tail = (current_tail + 1) & (BUFFER_SIZE - 1);
+            return next_tail == head.load(std::memory_order_acquire);
         }
 
         bool empty() const
         {
-            return head == tail;
+            return head.load(std::memory_order_relaxed) ==
+                   tail.load(std::memory_order_acquire);
         }
 
-        void push(LogMessage &&msg)
+        bool push(LogMessage &&msg)
         {
-            messages[tail] = std::move(msg);
-            tail = (tail + 1) & (BUFFER_SIZE - 1);
+            auto current_tail = tail.load(std::memory_order_relaxed);
+            auto next_tail = (current_tail + 1) & (BUFFER_SIZE - 1);
+
+            if (next_tail == head.load(std::memory_order_acquire))
+            {
+                return false;
+            }
+
+            new (&messages[current_tail]) LogMessage(std::move(msg));
+            std::atomic_thread_fence(std::memory_order_release);
+            tail.store(next_tail, std::memory_order_release);
+            return true;
         }
 
-        LogMessage &front()
+        bool pop(LogMessage &msg)
         {
-            return messages[head];
-        }
+            auto current_head = head.load(std::memory_order_relaxed);
 
-        void pop()
-        {
-            head = (head + 1) & (BUFFER_SIZE - 1);
+            if (current_head == tail.load(std::memory_order_acquire))
+            {
+                return false;
+            }
+
+            msg = std::move(messages[current_head]);
+
+            std::atomic_thread_fence(std::memory_order_release);
+            head.store((current_head + 1) & (BUFFER_SIZE - 1),
+                       std::memory_order_release);
+            return true;
         }
 
         size_t size() const
         {
-            return (tail - head) & (BUFFER_SIZE - 1);
+            auto h = head.load(std::memory_order_acquire);
+            auto t = tail.load(std::memory_order_acquire);
+            return (t - h) & (BUFFER_SIZE - 1);
         }
     };
 
@@ -196,13 +221,11 @@ private:
     // member variables
     Config config;
     RingBuffer buffer;
-    mutable std::shared_mutex mutex;
+    mutable std::shared_mutex configMutex; // for config changes
     std::ofstream logFile;
-    std::condition_variable_any notFull;
-    std::condition_variable_any notEmpty;
     std::jthread loggerThread;
-    std::atomic<bool> running;
-    size_t currentFileSize{0};
+    std::atomic<bool> running{true};
+    std::atomic<size_t> currentFileSize{0};
     static inline std::unique_ptr<Logger> instance;
     static inline std::once_flag initFlag;
 
@@ -212,9 +235,8 @@ private:
     void writeLogMessage(const LogMessage &msg);
     void rotateLogFileIfNeeded();
     void cleanOldLogs();
-    std::string formatLogMessage(const LogMessage &msg);
+    std::string formatLogMessage(const LogMessage &msg) noexcept;
     const char *getLevelColor(Level level) const;
-    static std::string_view getLevelString(Level level);
 
 public:
     static Logger *getInstance();
@@ -226,6 +248,7 @@ public:
     void setModuleName(std::string_view module);
     friend std::unique_ptr<Logger> std::make_unique<Logger>();
 
+    // log method
     template <typename... Args>
     void log(const std::source_location &loc, Level level, std::format_string<Args...> fmt, Args &&...args)
     {
@@ -234,18 +257,21 @@ public:
 
         try
         {
-            std::string message = std::format(fmt, std::forward<Args>(args)...);
-            Context ctx(loc);
+            LogMessage msg{
+                std::format(fmt, std::forward<Args>(args)...),
+                level,
+                Context(loc)};
 
+            constexpr int MAX_RETRIES = 100;
+            int retries = 0;
+            while (!buffer.push(std::move(msg)))
             {
-                std::unique_lock lock(mutex);
-                while (buffer.full())
+                if (++retries > MAX_RETRIES)
                 {
-                    notFull.wait(lock);
+                    std::this_thread::yield();
+                    retries = 0;
                 }
-                buffer.push(LogMessage(std::move(message), level, std::move(ctx)));
             }
-            notEmpty.notify_one();
         }
         catch (const std::exception &e)
         {

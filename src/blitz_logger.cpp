@@ -20,6 +20,9 @@ void Logger::processLogs(std::stop_token st)
 
     auto processBuffer = [&](std::vector<LogMessage> &buffer)
     {
+        if (buffer.empty())
+            return;
+
         fileBuffer.clear();
         consoleBuffer.clear();
 
@@ -63,24 +66,14 @@ void Logger::processLogs(std::stop_token st)
         }
 
         buffer.clear();
-        notFull.notify_all(); // notify has space in buffer
     };
 
     while (!st.stop_requested())
     {
+        LogMessage msg;
+        while (batchBuffer.size() < BATCH_SIZE && buffer.pop(msg))
         {
-            std::unique_lock lock(mutex);
-            auto pred = [this]
-            { return !buffer.empty() || !running; };
-
-            if (notEmpty.wait_for(lock, std::chrono::milliseconds(1), pred))
-            {
-                while (!buffer.empty() && batchBuffer.size() < BATCH_SIZE)
-                {
-                    batchBuffer.push_back(std::move(buffer.front()));
-                    buffer.pop();
-                }
-            }
+            batchBuffer.push_back(std::move(msg));
         }
 
         if (!batchBuffer.empty())
@@ -88,28 +81,27 @@ void Logger::processLogs(std::stop_token st)
             processBuffer(batchBuffer);
             batchBuffer.clear();
         }
+        else
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
     }
 
-    // remaining logs
+    // process remaining logs
+    LogMessage msg;
+    while (buffer.pop(msg))
     {
-        std::unique_lock lock(mutex);
-        while (!buffer.empty())
+        batchBuffer.push_back(std::move(msg));
+        if (batchBuffer.size() >= BATCH_SIZE)
         {
-            batchBuffer.push_back(std::move(buffer.front()));
-            buffer.pop();
-            if (batchBuffer.size() >= BATCH_SIZE)
-            {
-                lock.unlock();
-                processBuffer(batchBuffer);
-                batchBuffer.clear();
-                lock.lock();
-            }
-        }
-        if (!batchBuffer.empty())
-        {
-            lock.unlock();
             processBuffer(batchBuffer);
+            batchBuffer.clear();
         }
+    }
+
+    if (!batchBuffer.empty())
+    {
+        processBuffer(batchBuffer);
     }
 }
 
@@ -150,73 +142,70 @@ void Logger::writeLogMessage(const LogMessage &msg)
 }
 
 [[nodiscard]]
-std::string Logger::formatLogMessage(const LogMessage &msg)
+std::string Logger::formatLogMessage(const LogMessage &msg) noexcept
 {
-    constexpr size_t ESTIMATED_SIZE = 256;
-    std::string result;
-    result.reserve(ESTIMATED_SIZE);
+    alignas(16) char buffer[1024];
+    size_t offset = 0;
 
+    // timestamp
     if (config.showTimestamp)
     {
-        char timestamp[32];
         auto time = std::chrono::system_clock::to_time_t(msg.timestamp);
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                       msg.timestamp.time_since_epoch()) %
                   1000;
-        std::strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S",
-                      std::localtime(&time));
 
-        result.append("[");
-        result.append(timestamp);
-        result.append(".");
-        result.append(std::to_string(ms.count()));
-        result.append("] ");
+        offset += std::strftime(buffer + offset, sizeof(buffer) - offset,
+                                "[%Y-%m-%d %H:%M:%S.", std::localtime(&time));
+        offset += std::snprintf(buffer + offset, sizeof(buffer) - offset,
+                                "%03d] ", static_cast<int>(ms.count()));
     }
 
-    static constexpr std::string_view LEVEL_PREFIX = "[";
-    static constexpr std::string_view LEVEL_SUFFIX = "] ";
+    static constexpr std::array<std::string_view, 7> LEVEL_STRINGS = {
+        "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "STEP"};
 
-    result.append(LEVEL_PREFIX);
-    result.append(getLevelString(msg.level));
-    result.append(LEVEL_SUFFIX);
+    const auto &level_str = LEVEL_STRINGS[static_cast<size_t>(msg.level)];
+    offset += std::snprintf(buffer + offset, sizeof(buffer) - offset,
+                            "[%.*s] ", static_cast<int>(level_str.size()), level_str.data());
 
+    // thread id
     if (config.showThreadId)
     {
-        result.append("[T-");
-        result.append(std::to_string(std::hash<std::thread::id>{}(msg.context.threadId)));
-        result.append("] ");
+        offset += std::snprintf(buffer + offset, sizeof(buffer) - offset,
+                                "[T-%zu] ",
+                                std::hash<std::thread::id>{}(msg.context.threadId));
     }
 
+    // module name
     if (config.showModuleName && !msg.context.module.empty())
     {
-        result.append("[");
-        result.append(msg.context.module);
-        result.append("] ");
+        offset += std::snprintf(buffer + offset, sizeof(buffer) - offset,
+                                "[%s] ", msg.context.module.c_str());
     }
 
+    // source location
     if (config.showSourceLocation)
     {
-        result.append("[");
-        if (config.showFullPath)
+        std::string_view file(msg.context.file);
+        if (!config.showFullPath)
         {
-            result.append(msg.context.file);
-        }
-        else
-        {
-            std::string_view file(msg.context.file);
             if (auto pos = file.find_last_of("/\\"); pos != std::string_view::npos)
             {
                 file = file.substr(pos + 1);
             }
-            result.append(file);
         }
-        result.append(":");
-        result.append(std::to_string(msg.context.line));
-        result.append("] ");
+        offset += std::snprintf(buffer + offset, sizeof(buffer) - offset,
+                                "[%.*s:%d] ", static_cast<int>(file.size()), file.data(), msg.context.line);
     }
 
-    result.append(msg.message);
-    return result;
+    // message content
+    const size_t remaining = sizeof(buffer) - offset;
+    const size_t msg_len = std::min(msg.message.size(), remaining - 1);
+    std::memcpy(buffer + offset, msg.message.data(), msg_len);
+    offset += msg_len;
+    buffer[offset] = '\0';
+
+    return std::string(buffer, offset);
 }
 
 void Logger::rotateLogFileIfNeeded()
@@ -307,30 +296,6 @@ const char *Logger::getLevelColor(Level level) const
     }
 }
 
-[[nodiscard]]
-std::string_view Logger::getLevelString(Level level)
-{
-    switch (level)
-    {
-    case Level::TRACE:
-        return "TRACE";
-    case Level::DEBUG:
-        return "DEBUG";
-    case Level::INFO:
-        return "INFO";
-    case Level::WARNING:
-        return "WARN";
-    case Level::ERROR:
-        return "ERROR";
-    case Level::FATAL:
-        return "FATAL";
-    case Level::STEP:
-        return "STEP";
-    default:
-        return "UNKNOWN";
-    }
-}
-
 Logger *Logger::getInstance()
 {
     if (!instance)
@@ -356,7 +321,7 @@ void Logger::initialize(const Config &cfg)
 
 void Logger::configure(const Config &cfg)
 {
-    std::unique_lock lock(mutex);
+    std::unique_lock lock(configMutex);
 
     // close the current log file if open
     if (logFile.is_open())
@@ -385,13 +350,11 @@ void Logger::configure(const Config &cfg)
 
         currentFileSize = std::filesystem::file_size(filename);
     }
-    // notify other threads that the configuration has been updated
-    notEmpty.notify_all();
 }
 
 void Logger::setLogLevel(Level level)
 {
-    std::unique_lock lock(mutex);
+    std::unique_lock lock(configMutex);
     config.minLevel = level;
 }
 
@@ -410,7 +373,6 @@ Logger::~Logger()
     try
     {
         running = false;
-        notEmpty.notify_all(); // notify to stop
         if (loggerThread.joinable())
         {
             loggerThread.request_stop();
@@ -423,5 +385,6 @@ Logger::~Logger()
     }
     catch (...)
     {
+        // Ignore exceptions in destructor
     }
 }
