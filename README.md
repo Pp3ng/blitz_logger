@@ -22,6 +22,46 @@ A modern, thread-safe, and feature-rich C++ logging library designed for high pe
 - **Thread Safety**: Safe for multi-threaded applications
 - **Modern C++ Features**: Uses C++20 features including std::format and std::source_location
 
+## Architecture
+
+The following diagram illustrates the high-level architecture of Blitz Logger:
+
+```
+[Thread 1]    [Thread 2]   [Thread 3]  ... (Producers)
+     │             │             │
+     ▼             ▼             ▼
+┌──────────────────────────────────────────────┐
+│               Logging Interface              │
+│  [TRACE][DEBUG][INFO][WARN][ERROR][FATAL]    │
+└──────────────────┬───────────────────────────┘
+                 │
+                 ▼
+┌──────────────────────────────────────────────┐
+│            Lock-free Ring Buffer             │
+│  ┌────────────────────────────────────┐      │
+│  │ [msg][msg][msg][msg]... (2^17 cap) │      │
+│  └────────────────────────────────────┘      │
+└──────────────────┬───────────────────────────┘
+                   │
+                   ▼
+       [Background Logger Thread] (Consumer)
+                 │
+         ┌───────┴────────┐
+         ▼                ▼
+  [Console Output]   [File Output]
+    │                       │
+    ▼                       ▼
+[Colored Output]     [Log File Rotation]
+                   /           \
+                  /             \
+         [Current Log]    [History Logs]
+                                │
+                                ▼
+                       [Auto Cleanup]
+                       (Keep last 5)
+
+```
+
 ## Sample
 
 ![Sample](sample.png)

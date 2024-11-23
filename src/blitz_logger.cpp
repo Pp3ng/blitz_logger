@@ -9,54 +9,64 @@ Logger::Logger() : config(Config{}), running(true)
 
 void Logger::processLogs(std::stop_token st)
 {
-    constexpr size_t BATCH_SIZE = 1024;
+    // batch size chosen to balance memory usage and throughput
+    constexpr size_t BATCH_SIZE = 4096;
 
-    // Use std::vector for dynamic memory management, and std::span for views
+    // pre-allocate buffers to avoid frequent reallocations
     std::vector<LogMessage> batchBuffer;
     batchBuffer.reserve(BATCH_SIZE);
 
+    // allocate 1MB for each output buffer
     std::vector<char> fileBuffer;
-    fileBuffer.reserve(1024 * 1024); // Reserve space for 1MB file buffer
+    fileBuffer.reserve(1024 * 1024);
     std::vector<char> consoleBuffer;
-    consoleBuffer.reserve(1024 * 1024); // Reserve space for 1MB console buffer
+    consoleBuffer.reserve(1024 * 1024);
 
+    // lambda to process a batch of messages
     auto processBuffer = [&](std::span<LogMessage> buffer)
     {
         if (buffer.empty())
             return;
 
+        // clear buffers for reuse
         fileBuffer.clear();
         consoleBuffer.clear();
 
+        // process each message in the batch
         for (const auto &msg : buffer)
         {
+            // handle file output
             if (config.fileOutput)
             {
-                std::string formattedMessage = formatLogMessage(msg);
-                fileBuffer.insert(fileBuffer.end(), formattedMessage.begin(), formattedMessage.end());
+                formatLogMessage(msg, fileBuffer);
                 fileBuffer.push_back('\n');
             }
 
+            // handle console output with optional colors
             if (config.consoleOutput)
             {
                 if (config.useColors)
                 {
-                    std::string levelColor = getLevelColor(msg.level);
+                    // add color prefix
+                    std::string_view levelColor = getLevelColor(msg.level);
                     consoleBuffer.insert(consoleBuffer.end(), levelColor.begin(), levelColor.end());
-                    std::string formattedMessage = formatLogMessage(msg);
-                    consoleBuffer.insert(consoleBuffer.end(), formattedMessage.begin(), formattedMessage.end());
+
+                    // format message
+                    formatLogMessage(msg, consoleBuffer);
+
+                    // add color reset and newline
                     consoleBuffer.insert(consoleBuffer.end(), COLORS[0], COLORS[0] + strlen(COLORS[0]));
                     consoleBuffer.push_back('\n');
                 }
                 else
                 {
-                    std::string formattedMessage = formatLogMessage(msg);
-                    consoleBuffer.insert(consoleBuffer.end(), formattedMessage.begin(), formattedMessage.end());
+                    formatLogMessage(msg, consoleBuffer);
                     consoleBuffer.push_back('\n');
                 }
             }
         }
 
+        // write file buffer if needed
         if (config.fileOutput && logFile.is_open() && !fileBuffer.empty())
         {
             logFile.write(fileBuffer.data(), fileBuffer.size());
@@ -65,6 +75,7 @@ void Logger::processLogs(std::stop_token st)
             rotateLogFileIfNeeded();
         }
 
+        // write console buffer if needed
         if (config.consoleOutput && !consoleBuffer.empty())
         {
             std::cout.write(consoleBuffer.data(), consoleBuffer.size());
@@ -72,9 +83,11 @@ void Logger::processLogs(std::stop_token st)
         }
     };
 
+    // main processing loop
     while (!st.stop_requested())
     {
         LogMessage msg;
+        // collect messages until batch is full or queue is empty
         while (batchBuffer.size() < BATCH_SIZE && buffer.pop(msg))
         {
             batchBuffer.push_back(std::move(msg));
@@ -87,11 +100,12 @@ void Logger::processLogs(std::stop_token st)
         }
         else
         {
+            // sleep briefly when no messages are available
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
 
-    // process remaining logs
+    // process remaining messages before shutdown
     LogMessage msg;
     while (buffer.pop(msg))
     {
@@ -103,108 +117,20 @@ void Logger::processLogs(std::stop_token st)
         }
     }
 
+    // process final batch if any messages remain
     if (!batchBuffer.empty())
     {
         processBuffer(std::span<LogMessage>(batchBuffer.data(), batchBuffer.size()));
     }
 }
 
-[[nodiscard]]
-std::string Logger::formatLogMessage(const LogMessage &msg) noexcept
+void Logger::formatLogMessage(const LogMessage &msg, std::vector<char> &buffer) noexcept
 {
-    // most log messages are short, so stack allocation is more likely to be sufficient
-    // using 16-byte alignment for potential SIMD operations
-    alignas(16) char stack_buffer[1024];
-    size_t offset = 0;
-    const size_t max_stack_size = sizeof(stack_buffer);
-
-    // estimate the total size needed for the message
-    // base size (256) includes space for timestamp, level, thread id, etc.
+    // estimate required space to minimize reallocations
+    // base size (256) accounts for timestamps, level, thread id etc
     const size_t estimated_size = 256 + msg.message.size();
+    buffer.reserve(buffer.size() + estimated_size);
 
-    // slow path: message too large for stack buffer
-    if (estimated_size > max_stack_size) [[unlikely]]
-    {
-        // allocate heap buffer with exact size estimation
-        std::string heap_buffer;
-        heap_buffer.reserve(estimated_size);
-
-        // format timestamp if enabled
-        if (config.showTimestamp) [[likely]]
-        {
-            auto time = std::chrono::system_clock::to_time_t(msg.timestamp);
-            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                          msg.timestamp.time_since_epoch()) %
-                      1000;
-
-            // format date and time
-            char time_buffer[32];
-            size_t time_len = std::strftime(time_buffer, sizeof(time_buffer),
-                                            "[%Y-%m-%d %H:%M:%S.", std::localtime(&time));
-            heap_buffer.append(time_buffer, time_len);
-
-            // format milliseconds
-            char ms_buffer[8];
-            int ms_len = std::snprintf(ms_buffer, sizeof(ms_buffer),
-                                       "%03d] ", static_cast<int>(ms.count()));
-            heap_buffer.append(ms_buffer, ms_len);
-        }
-
-        // define log levels array
-
-        // format log level
-        const auto &level_str = LEVEL_STRINGS[static_cast<size_t>(msg.level)];
-        char level_buffer[32];
-        int level_len = std::snprintf(level_buffer, sizeof(level_buffer),
-                                      "[%.*s] ", static_cast<int>(level_str.size()),
-                                      level_str.data());
-        heap_buffer.append(level_buffer, level_len);
-
-        // format thread id if enabled
-        if (config.showThreadId) [[likely]]
-        {
-            char thread_buffer[32];
-            int thread_len = std::snprintf(thread_buffer, sizeof(thread_buffer),
-                                           "[T-%zu] ",
-                                           std::hash<std::thread::id>{}(msg.context.threadId));
-            heap_buffer.append(thread_buffer, thread_len);
-        }
-
-        // format module name if enabled and not empty
-        if (config.showModuleName && !msg.context.module.empty()) [[likely]]
-        {
-            char module_buffer[256];
-            int module_len = std::snprintf(module_buffer, sizeof(module_buffer),
-                                           "[%s] ", msg.context.module.c_str());
-            heap_buffer.append(module_buffer, module_len);
-        }
-
-        // format source location if enabled
-        if (config.showSourceLocation) [[likely]]
-        {
-            std::string_view file(msg.context.file);
-            // extract filename from path if full path is not needed
-            if (!config.showFullPath) [[likely]]
-            {
-                if (auto pos = file.find_last_of("/\\"); pos != std::string_view::npos) [[likely]]
-                {
-                    file = file.substr(pos + 1);
-                }
-            }
-
-            char loc_buffer[512];
-            int loc_len = std::snprintf(loc_buffer, sizeof(loc_buffer),
-                                        "[%.*s:%d] ", static_cast<int>(file.size()),
-                                        file.data(), msg.context.line);
-            heap_buffer.append(loc_buffer, loc_len);
-        }
-
-        // append the actual message content
-        heap_buffer.append(msg.message);
-        return heap_buffer;
-    }
-
-    // fast path: using stack buffer
     // format timestamp if enabled
     if (config.showTimestamp) [[likely]]
     {
@@ -213,30 +139,39 @@ std::string Logger::formatLogMessage(const LogMessage &msg) noexcept
                       msg.timestamp.time_since_epoch()) %
                   1000;
 
-        offset += std::strftime(stack_buffer + offset, max_stack_size - offset,
-                                "[%Y-%m-%d %H:%M:%S.", std::localtime(&time));
-        offset += std::snprintf(stack_buffer + offset, max_stack_size - offset,
-                                "%03d] ", static_cast<int>(ms.count()));
+        char time_buffer[32];
+        size_t time_len = std::strftime(time_buffer, sizeof(time_buffer),
+                                        "[%Y-%m-%d %H:%M:%S.", std::localtime(&time));
+        buffer.insert(buffer.end(), time_buffer, time_buffer + time_len);
+
+        char ms_buffer[8];
+        int ms_len = std::snprintf(ms_buffer, sizeof(ms_buffer),
+                                   "%03d] ", static_cast<int>(ms.count()));
+        buffer.insert(buffer.end(), ms_buffer, ms_buffer + ms_len);
     }
 
+    // format log level
     const auto &level_str = LEVEL_STRINGS[static_cast<size_t>(msg.level)];
-    offset += std::snprintf(stack_buffer + offset, max_stack_size - offset,
-                            "[%.*s] ", static_cast<int>(level_str.size()),
-                            level_str.data());
+    buffer.push_back('[');
+    buffer.insert(buffer.end(), level_str.begin(), level_str.end());
+    buffer.insert(buffer.end(), {']', ' '});
 
     // format thread id if enabled
     if (config.showThreadId) [[likely]]
     {
-        offset += std::snprintf(stack_buffer + offset, max_stack_size - offset,
-                                "[T-%zu] ",
-                                std::hash<std::thread::id>{}(msg.context.threadId));
+        char thread_buffer[32];
+        int thread_len = std::snprintf(thread_buffer, sizeof(thread_buffer),
+                                       "[T-%zu] ",
+                                       std::hash<std::thread::id>{}(msg.context.threadId));
+        buffer.insert(buffer.end(), thread_buffer, thread_buffer + thread_len);
     }
 
     // format module name if enabled and not empty
     if (config.showModuleName && !msg.context.module.empty()) [[likely]]
     {
-        offset += std::snprintf(stack_buffer + offset, max_stack_size - offset,
-                                "[%s] ", msg.context.module.c_str());
+        buffer.push_back('[');
+        buffer.insert(buffer.end(), msg.context.module.begin(), msg.context.module.end());
+        buffer.insert(buffer.end(), {']', ' '});
     }
 
     // format source location if enabled
@@ -250,29 +185,18 @@ std::string Logger::formatLogMessage(const LogMessage &msg) noexcept
                 file = file.substr(pos + 1);
             }
         }
-        offset += std::snprintf(stack_buffer + offset, max_stack_size - offset,
-                                "[%.*s:%d] ", static_cast<int>(file.size()),
-                                file.data(), msg.context.line);
+
+        buffer.push_back('[');
+        buffer.insert(buffer.end(), file.begin(), file.end());
+
+        char line_buffer[16];
+        int line_len = std::snprintf(line_buffer, sizeof(line_buffer),
+                                     ":%d] ", msg.context.line);
+        buffer.insert(buffer.end(), line_buffer, line_buffer + line_len);
     }
 
-    // check remaining space for message content
-    const size_t remaining = max_stack_size - offset;
-    if (msg.message.size() < remaining) [[likely]]
-    {
-        // fast path: direct copy to stack buffer
-        std::memcpy(stack_buffer + offset, msg.message.data(), msg.message.size());
-        offset += msg.message.size();
-        return std::string(stack_buffer, offset);
-    }
-    else
-    {
-        // slow path: combine stack buffer content with remaining message
-        std::string result;
-        result.reserve(offset + msg.message.size());
-        result.append(stack_buffer, offset);
-        result.append(msg.message);
-        return result;
-    }
+    // append the actual message content
+    buffer.insert(buffer.end(), msg.message.begin(), msg.message.end());
 }
 
 void Logger::rotateLogFileIfNeeded()

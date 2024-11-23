@@ -105,39 +105,28 @@ private:
     };
 
     // ring buffer implementation
-    static constexpr size_t BUFFER_SIZE = 1 << 17; // 2^17
+    static constexpr size_t BUFFER_SIZE = 1 << 17; // 2^17 = 131,072
 
     struct alignas(64) RingBuffer
     {
         alignas(64) std::array<LogMessage, BUFFER_SIZE> messages;
-        alignas(64) std::atomic<size_t> head{0};
-        alignas(64) std::atomic<size_t> tail{0};
-
-        bool full() const
-        {
-            auto current_tail = tail.load(std::memory_order_relaxed);
-            auto next_tail = (current_tail + 1) & (BUFFER_SIZE - 1);
-            return next_tail == head.load(std::memory_order_acquire);
-        }
-
-        bool empty() const
-        {
-            return head.load(std::memory_order_relaxed) ==
-                   tail.load(std::memory_order_acquire);
-        }
+        alignas(64) std::atomic<size_t> head{0}; // cache line 1
+        alignas(64) std::atomic<size_t> tail{0}; // cache line 2
 
         bool push(LogMessage &&msg)
         {
             auto current_tail = tail.load(std::memory_order_relaxed);
             auto next_tail = (current_tail + 1) & (BUFFER_SIZE - 1);
 
-            if (next_tail == head.load(std::memory_order_acquire))
+            if (next_tail == head.load(std::memory_order_relaxed))
             {
-                return false;
+                if (next_tail == head.load(std::memory_order_acquire))
+                {
+                    return false;
+                }
             }
 
             new (&messages[current_tail]) LogMessage(std::move(msg));
-            std::atomic_thread_fence(std::memory_order_release);
             tail.store(next_tail, std::memory_order_release);
             return true;
         }
@@ -146,24 +135,18 @@ private:
         {
             auto current_head = head.load(std::memory_order_relaxed);
 
-            if (current_head == tail.load(std::memory_order_acquire))
+            if (current_head == tail.load(std::memory_order_relaxed))
             {
-                return false;
+                if (current_head == tail.load(std::memory_order_acquire))
+                {
+                    return false;
+                }
             }
 
             msg = std::move(messages[current_head]);
-
-            std::atomic_thread_fence(std::memory_order_release);
             head.store((current_head + 1) & (BUFFER_SIZE - 1),
                        std::memory_order_release);
             return true;
-        }
-
-        size_t size() const
-        {
-            auto h = head.load(std::memory_order_acquire);
-            auto t = tail.load(std::memory_order_acquire);
-            return (t - h) & (BUFFER_SIZE - 1);
         }
     };
 
@@ -209,7 +192,7 @@ private:
     void processLogs(std::stop_token st);
     void rotateLogFileIfNeeded();
     void cleanOldLogs();
-    std::string formatLogMessage(const LogMessage &msg) noexcept;
+    void formatLogMessage(const LogMessage &msg, std::vector<char> &buffer) noexcept;
     const char *getLevelColor(Level level) const;
 
 public:

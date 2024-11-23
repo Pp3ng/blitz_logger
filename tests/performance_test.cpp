@@ -10,7 +10,7 @@ using namespace std::chrono_literals;
 struct TestConfig
 {
     static constexpr size_t DEFAULT_MESSAGE_COUNT = 1'000'000;
-    static constexpr int REPEAT_COUNT = 3;
+    static constexpr int REPEAT_COUNT = 5;
     static constexpr std::array<size_t, 4> THREAD_COUNTS = {2, 4, 8, 16};
     static constexpr std::array<size_t, 2> MESSAGE_SIZES = {64, 256};
     static constexpr std::array<size_t, 3> BUFFER_SIZES = {1 << 16, 1 << 17, 1 << 18};
@@ -109,17 +109,17 @@ std::string formatNumber(double number)
 void warmUp(Logger *logger)
 {
     logger->setModuleName("Warmup");
-    for (size_t i = 0; i < 1000; ++i)
+    for (size_t i = 0; i < 10000; ++i)
     {
         LOG_INFO("warmup message #{}", i);
     }
-    std::this_thread::sleep_for(1000ms);
+    std::this_thread::sleep_for(2000ms);
 }
 
 // cool down period
 void coolDown()
 {
-    std::this_thread::sleep_for(1000ms);
+    std::this_thread::sleep_for(2000ms);
 }
 
 // single thread performance test
