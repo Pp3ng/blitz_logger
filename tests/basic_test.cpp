@@ -42,17 +42,20 @@ void testFormatting()
 {
     Logger::getInstance()->setModuleName("Formatting");
     LOG_STEP(2, "=== Testing Formatting ===");
+
     // basic type formatting
+    LOG_INFO("Test curly braces: {{}}");
     LOG_INFO("Integer: {}", 42);
     LOG_INFO("Float: {:.2f}", 3.14159);
     LOG_INFO("String: {}", "hello");
     LOG_INFO("Multiple args: {}, {}, {}", 1, "two", 3.0);
 
     // complex formatting
+    LOG_INFO("Test special characters: \\n, \\t, \\r");
     LOG_INFO("Right aligned: |{:>10}|", "right");
     LOG_INFO("Hexadecimal: 0x{:X}", 255);
     LOG_INFO("Scientific: {:.2e}", 12345.6789);
-
+    LOG_INFO("Unicode test: Hello World 🌍");
     LOG_INFO("Formatting test complete\n");
 }
 

@@ -52,34 +52,6 @@ public:
     };
 
 private:
-    // crash handler function
-    static void terminateHandler()
-    {
-        try
-        {
-            if (auto logger = Logger::getInstance())
-            {
-                logger->fatal(std::source_location::current(),
-                              "Application is terminating due to fatal error");
-
-                LogMessage msg;
-                while (logger->buffer.pop(msg))
-                {
-                    logger->writeLogMessage(msg);
-                }
-
-                if (logger->logFile.is_open())
-                {
-                    logger->logFile.flush();
-                }
-            }
-        }
-        catch (...)
-        {
-            std::cerr << "Fatal error occurred while handling program termination" << std::endl;
-        }
-        std::abort();
-    }
     // log context information
     struct Context
     {
@@ -218,6 +190,9 @@ private:
     static constexpr size_t COLOR_FATAL = 9;   // bright red
     static constexpr size_t COLOR_STEP = 5;    // blue
 
+    static constexpr std::array<std::string_view, 7> LEVEL_STRINGS = {
+        "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "STEP"};
+
     // member variables
     Config config;
     RingBuffer buffer;
@@ -232,7 +207,6 @@ private:
     // private member functions
     Logger();
     void processLogs(std::stop_token st);
-    void writeLogMessage(const LogMessage &msg);
     void rotateLogFileIfNeeded();
     void cleanOldLogs();
     std::string formatLogMessage(const LogMessage &msg) noexcept;

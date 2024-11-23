@@ -1,6 +1,7 @@
 #include "blitz_logger.hpp"
 #include <regex>
 #include <set>
+#include <ranges>
 
 // function to verify log integrity
 [[nodiscard]]
@@ -9,99 +10,85 @@ bool verifyLogIntegrity(const std::string &logPath, int expectedCount)
     std::ifstream logFile(logPath);
     if (!logFile)
     {
-        std::cerr << "Failed to open log file: " << logPath << std::endl;
+        std::cerr << std::format("[ERROR] Failed to open log file: {}\n", logPath);
         return false;
     }
 
-    std::string line;
     std::set<int> numbers;
     std::regex numberPattern(R"(Number: (\d+))");
-    std::smatch matches;
 
-    // extract all numbers from log file
-    while (std::getline(logFile, line))
+    for (std::string line; std::getline(logFile, line);)
     {
+        std::smatch matches;
         if (std::regex_search(line, matches, numberPattern))
-        {
             numbers.insert(std::stoi(matches[1]));
-        }
     }
 
-    // check if all numbers from 1 to expectedCount are present
-    bool isComplete = true;
-    for (int i = 1; i <= expectedCount; ++i)
+    // Check for missing or unexpected numbers
+    auto missingNumbers =
+        std::views::iota(1, expectedCount + 1) | std::views::filter([&numbers](int n)
+                                                                    { return !numbers.contains(n); });
+
+    auto extraNumbers = numbers | std::views::filter([expectedCount](int n)
+                                                     { return n < 1 || n > expectedCount; });
+
+    for (int n : missingNumbers)
+        std::cout << std::format("[WARNING] Missing number: {}\n", n);
+
+    for (int n : extraNumbers)
+        std::cout << std::format("[WARNING] Unexpected number: {}\n", n);
+
+    std::cout << std::format("[INFO] Numbers found: {}/{}\n", numbers.size(), expectedCount);
+
+    return std::ranges::empty(missingNumbers) && std::ranges::empty(extraNumbers);
+}
+
+// function to log messages with progress
+void logMessages(int maxCount)
+{
+    auto writeStart = std::chrono::high_resolution_clock::now();
+
+    for (int i = 1; i <= maxCount; ++i)
     {
-        if (numbers.find(i) == numbers.end())
-        {
-            std::cout << "Missing number: " << i << std::endl;
-            isComplete = false;
-        }
+        LOG_INFO("Number: {}", i);
+
+        // Show progress every 100,000 messages
+        if (i % 100000 == 0)
+            std::cout << std::format("\r[PROGRESS] Writing: {}/{}...", i, maxCount) << std::flush;
     }
 
-    // check for any extra numbers
-    for (int num : numbers)
-    {
-        if (num < 1 || num > expectedCount)
-        {
-            std::cout << "Unexpected number found: " << num << std::endl;
-            isComplete = false;
-        }
-    }
+    auto writeEnd = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(writeEnd - writeStart);
+    double writeSpeed = maxCount / (duration.count() / 1000.0);
 
-    std::cout << "Numbers found: " << numbers.size() << "/" << expectedCount << std::endl;
-    return isComplete;
+    std::cout << std::format("\n[INFO] Write completed in {:.2f} seconds, {:.2f} msgs/sec\n", duration.count() / 1000.0, writeSpeed);
 }
 
 auto main(void) -> int
 {
-    // configure logger
-    Logger::Config cfg;
-    cfg.logDir = "test_logs";
-    cfg.filePrefix = "integrity_test";
-    cfg.maxFileSize = 1024 * 1024 * 1500; // 1.5GB to avoid file rotation during test
-    cfg.minLevel = Logger::Level::INFO;
-    cfg.consoleOutput = false; // disable console output for better performance
-    cfg.fileOutput = true;
+    // Logger configuration
+    Logger::Config cfg = {
+        .logDir = "test_logs",
+        .filePrefix = "integrity_test",
+        .maxFileSize = 1'500'000'000, // 1.5 GB to ensure no rotation during test
+        .minLevel = Logger::Level::INFO,
+        .consoleOutput = false,
+        .fileOutput = true};
 
-    // initialize logger
     Logger::initialize(cfg);
 
-    const int MAX_COUNT = 10000000; // 10 million log messages
+    const int MAX_COUNT = 10'000'000;
 
-    // record start time for writing
-    auto write_start = std::chrono::high_resolution_clock::now();
+    // Log messages
+    logMessages(MAX_COUNT);
 
-    // write log messages
-    for (int i = 1; i <= MAX_COUNT; ++i)
-    {
-        LOG_INFO("Number: {}", i);
-
-        // print progress every 10000 messages
-        if (i % 10000 == 0)
-        {
-            std::cout << "Progress: " << i << "/" << MAX_COUNT << std::endl;
-        }
-    }
-
-    // record end time for writing
-    auto write_end = std::chrono::high_resolution_clock::now();
-    auto write_duration = std::chrono::duration_cast<std::chrono::milliseconds>(write_end - write_start);
-
-    // calculate write performance
-    double write_seconds = write_duration.count() / 1000.0;
-    double write_msgs_per_sec = MAX_COUNT / write_seconds;
-
-    std::cout << "Write time: " << std::fixed << std::setprecision(2) << write_seconds << " seconds" << std::endl;
-    std::cout << "Write speed: " << std::fixed << std::setprecision(2) << write_msgs_per_sec << " msgs/sec" << std::endl;
-
-    // verify log integrity
+    // Verify log integrity
     std::string logPath = std::format("{}/{}.log", cfg.logDir, cfg.filePrefix);
-    std::cout << "\nVerifying log integrity..." << std::endl;
+    std::cout << "\n[INFO] Verifying log integrity...\n";
+
     bool integrityCheck = verifyLogIntegrity(logPath, MAX_COUNT);
+    std::cout << std::format("[RESULT] Integrity check: {}\n", integrityCheck ? "PASSED" : "FAILED");
 
-    std::cout << "Integrity check: " << (integrityCheck ? "PASSED" : "FAILED") << std::endl;
-
-    // cleanup
     Logger::destroyInstance();
 
     return integrityCheck ? 0 : 1;
