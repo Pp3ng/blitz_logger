@@ -3,6 +3,7 @@
 #include <set>
 
 // function to verify log integrity
+[[nodiscard]]
 bool verifyLogIntegrity(const std::string &logPath, int expectedCount)
 {
     std::ifstream logFile(logPath);
@@ -51,13 +52,13 @@ bool verifyLogIntegrity(const std::string &logPath, int expectedCount)
     return isComplete;
 }
 
-int main()
+auto main(void) -> int
 {
     // configure logger
     Logger::Config cfg;
     cfg.logDir = "test_logs";
     cfg.filePrefix = "integrity_test";
-    cfg.maxFileSize = 1024 * 1024 * 100; // 100mb to ensure all logs in one file
+    cfg.maxFileSize = 1024 * 1024 * 1500; // 1.5GB to avoid file rotation during test
     cfg.minLevel = Logger::Level::INFO;
     cfg.consoleOutput = false; // disable console output for better performance
     cfg.fileOutput = true;
@@ -65,7 +66,7 @@ int main()
     // initialize logger
     Logger::initialize(cfg);
 
-    const int MAX_COUNT = 100000;
+    const int MAX_COUNT = 10000000; // 10 million log messages
 
     // record start time for writing
     auto write_start = std::chrono::high_resolution_clock::now();
@@ -90,13 +91,8 @@ int main()
     double write_seconds = write_duration.count() / 1000.0;
     double write_msgs_per_sec = MAX_COUNT / write_seconds;
 
-    std::cout << "\nWrite Performance (without wait time):" << std::endl;
     std::cout << "Write time: " << std::fixed << std::setprecision(2) << write_seconds << " seconds" << std::endl;
     std::cout << "Write speed: " << std::fixed << std::setprecision(2) << write_msgs_per_sec << " msgs/sec" << std::endl;
-
-    // wait for all logs to be written
-    std::cout << "\nWaiting for logs to be written to disk..." << std::endl;
-    std::this_thread::sleep_for(std::chrono::seconds(5));
 
     // verify log integrity
     std::string logPath = std::format("{}/{}.log", cfg.logDir, cfg.filePrefix);

@@ -129,8 +129,8 @@ private:
     };
 
     // ring buffer
-    // 2^15
-    static constexpr size_t BUFFER_SIZE = 2 << 14;
+    // 2^16
+    static constexpr size_t BUFFER_SIZE = 2 << 15;
 
     struct RingBuffer
     {

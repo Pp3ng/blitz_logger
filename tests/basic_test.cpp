@@ -95,11 +95,11 @@ auto main(void) -> int
 
         // cleanup
         Logger::destroyInstance();
-        return 0;
+        return EXIT_SUCCESS;
     }
     catch (const std::exception &e)
     {
         std::cerr << "Test failed: " << e.what() << std::endl;
-        return 1;
+        return EXIT_FAILURE;
     }
 }

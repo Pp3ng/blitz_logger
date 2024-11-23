@@ -149,6 +149,7 @@ void Logger::writeLogMessage(const LogMessage &msg)
     }
 }
 
+[[nodiscard]]
 std::string Logger::formatLogMessage(const LogMessage &msg)
 {
     constexpr size_t ESTIMATED_SIZE = 256;
@@ -282,6 +283,7 @@ void Logger::cleanOldLogs()
     }
 }
 
+[[nodiscard]]
 const char *Logger::getLevelColor(Level level) const
 {
     switch (level)
@@ -305,6 +307,7 @@ const char *Logger::getLevelColor(Level level) const
     }
 }
 
+[[nodiscard]]
 std::string_view Logger::getLevelString(Level level)
 {
     switch (level)

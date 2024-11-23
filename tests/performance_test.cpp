@@ -76,21 +76,21 @@ void multiThreadTest(size_t messageCount, size_t threadCount)
     std::cout << "average throughput per thread: " << formatNumber(throughput / threadCount) << " messages/sec" << std::endl;
 }
 
-int main()
+auto main(void) -> int
 {
     // configure logger
     Logger::Config cfg;
     cfg.logDir = "test_logs";
     cfg.filePrefix = "performance_test";
     cfg.maxFileSize = 100 * 1024 * 1024; // 100MB
-    cfg.maxFiles = 5;
+    cfg.maxFiles = 10;
     cfg.consoleOutput = false; // disable console output for more accurate performance testing
 
     Logger::initialize(cfg);
 
     // run tests
-    const size_t SINGLE_THREAD_MESSAGES = 100000;
-    const size_t MULTI_THREAD_MESSAGES = 50000;
+    const size_t SINGLE_THREAD_MESSAGES = 1000000;
+    const size_t MULTI_THREAD_MESSAGES = 500000;
     const std::vector<size_t> THREAD_COUNTS = {2, 4, 8, 16};
 
     // single thread test
@@ -98,10 +98,8 @@ int main()
 
     // multi thread tests (different thread counts)
     for (size_t threadCount : THREAD_COUNTS)
-    {
         multiThreadTest(MULTI_THREAD_MESSAGES, threadCount);
-    }
 
     Logger::destroyInstance();
-    return 0;
+    return EXIT_SUCCESS;
 }
