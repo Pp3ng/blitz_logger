@@ -4,23 +4,14 @@ A modern, thread-safe, and feature-rich C++ logging library designed for high pe
 
 ## Features
 
-- **Multiple Log Levels**: TRACE, DEBUG, INFO, WARNING, ERROR, FATAL and STEP
-- **Asynchronous Logging**: Non-blocking logging operations with background processing
-- **File Management**:
-  - Automatic log file rotation based on file size
-  - Configurable maximum file size and count
-  - Timestamp-based file naming
-- **Flexible Output**:
-  - Simultaneous console and file output
-  - Colored console output support
-  - Customizable output format
-- **Rich Context Information**:
-  - Timestamps
-  - Thread IDs
-  - Source location (file, line, function)
-  - Module names
-- **Thread Safety**: Safe for multi-threaded applications
-- **Modern C++ Features**: Uses C++20 features including std::format and std::source_location
+| Feature Category     | Description                                                                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Log Levels           | Supports TRACE, DEBUG, INFO, WARNING, ERROR, FATAL and STEP                                                                     |
+| Asynchronous Logging | Non-blocking logging operations with background processing using lock-free ring buffer                                          |
+| File Management      | • Automatic log file rotation based on file size<br>• Configurable maximum file size and count<br>• Timestamp-based file naming |
+| Flexible Output      | • Simultaneous console and file output<br>• Colored console output support<br>• Customizable output format                      |
+| Rich Context         | • Timestamps<br>• Thread IDs<br>• Source location (file, line, function)<br>• Module names                                      |
+| Thread Safety        | Safe for multi-threaded applications                                                                                            |
 
 ## Architecture
 
@@ -81,7 +72,7 @@ The following diagram illustrates the high-level architecture of Blitz Logger:
 ```cpp
 #include "blitz_logger.hpp"
 
-int main() {
+auto main() -> int {
     // Use default configuration
     Logger::getInstance();
 
@@ -90,7 +81,7 @@ int main() {
     LOG_DEBUG("Debug information: {}", 42);
     LOG_ERROR("Something went wrong: {}", "error message");
 
-    return 0;
+    return EXIT_SUCCESS;
 }
 ```
 
@@ -113,9 +104,29 @@ LOG_INFO("Custom configuration applied");
 ### Module-based Logging
 
 ```cpp
-void someFunction() {
+void initializeDatabase() {
+    Logger::getInstance()->setModuleName("DatabaseModule");
+    LOG_STEP(1, "=== Database Initialization ===");
+    LOG_INFO("Starting database connection...");
+    // Database initialization code here
+    LOG_INFO("Database connection established");
+}
+
+void initializeNetwork() {
     Logger::getInstance()->setModuleName("NetworkModule");
+    LOG_STEP(2, "=== Network Initialization ===");
+    LOG_INFO("Configuring network interfaces...");
+    // Network initialization code here
     LOG_INFO("Network initialization complete");
+}
+
+void initializeSystem() {
+    // Initialize core modules
+    initializeDatabase();
+    initializeNetwork();
+
+    Logger::getInstance()->setModuleName("SystemModule");
+    LOG_INFO("All modules initialized successfully");
 }
 ```
 
