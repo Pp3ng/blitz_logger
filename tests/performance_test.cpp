@@ -3,6 +3,7 @@
 #include <cmath>
 #include <random>
 #include <sys/resource.h>
+#include <iomanip>
 
 using namespace std::chrono_literals;
 
@@ -26,6 +27,14 @@ struct PerformanceStats
     double cpuUsage{0.0};
     size_t memoryUsage{0};
     size_t lostMessages{0};
+};
+
+// store test results
+struct TestResult
+{
+    size_t threadCount;
+    size_t messageSize;
+    PerformanceStats stats;
 };
 
 // cpu usage monitor class
@@ -328,10 +337,14 @@ int main()
 
         Logger::initialize(cfg);
 
+        std::vector<TestResult> results;
+
         // single thread tests with different message sizes
         for (size_t msgSize : TestConfig::MESSAGE_SIZES)
         {
-            singleThreadTest(TestConfig::DEFAULT_MESSAGE_COUNT, msgSize);
+            TestResult result{1, msgSize,
+                              singleThreadTest(TestConfig::DEFAULT_MESSAGE_COUNT, msgSize)};
+            results.push_back(result);
         }
 
         // multi-thread tests with different thread counts and message sizes
@@ -339,7 +352,59 @@ int main()
         {
             for (size_t msgSize : TestConfig::MESSAGE_SIZES)
             {
-                multiThreadTest(TestConfig::DEFAULT_MESSAGE_COUNT / threadCount, threadCount, msgSize);
+                TestResult result{threadCount, msgSize,
+                                  multiThreadTest(TestConfig::DEFAULT_MESSAGE_COUNT / threadCount, threadCount, msgSize)};
+                results.push_back(result);
+            }
+        }
+
+        std::cout << "\n============= Performance Test Summary =============" << std::endl;
+
+        std::cout << "\nSingle Thread Results:" << std::endl;
+        std::cout << std::setw(15) << "Message Size"
+                  << std::setw(20) << "Throughput (msg/s)"
+                  << std::setw(20) << "Latency (μs)"
+                  << std::setw(15) << "CPU (%)"
+                  << std::setw(15) << "Memory (KB)"
+                  << std::setw(15) << "Lost Msgs" << std::endl;
+        std::cout << std::string(100, '-') << std::endl;
+
+        for (const auto &result : results)
+        {
+            if (result.threadCount == 1)
+            {
+                std::cout << std::setw(15) << result.messageSize
+                          << std::setw(20) << formatNumber(result.stats.avgThroughput)
+                          << std::setw(20) << formatNumber(result.stats.avgLatency)
+                          << std::setw(15) << formatNumber(result.stats.cpuUsage)
+                          << std::setw(15) << result.stats.memoryUsage
+                          << std::setw(15) << result.stats.lostMessages << std::endl;
+            }
+        }
+
+        std::cout << "\nMulti-Thread Results:" << std::endl;
+        for (size_t threadCount : TestConfig::THREAD_COUNTS)
+        {
+            std::cout << "\nThread Count: " << threadCount << std::endl;
+            std::cout << std::setw(15) << "Message Size"
+                      << std::setw(20) << "Throughput (msg/s)"
+                      << std::setw(20) << "Latency (μs)"
+                      << std::setw(15) << "CPU (%)"
+                      << std::setw(15) << "Memory (KB)"
+                      << std::setw(15) << "Lost Msgs" << std::endl;
+            std::cout << std::string(100, '-') << std::endl;
+
+            for (const auto &result : results)
+            {
+                if (result.threadCount == threadCount)
+                {
+                    std::cout << std::setw(15) << result.messageSize
+                              << std::setw(20) << formatNumber(result.stats.avgThroughput)
+                              << std::setw(20) << formatNumber(result.stats.avgLatency)
+                              << std::setw(15) << formatNumber(result.stats.cpuUsage)
+                              << std::setw(15) << result.stats.memoryUsage
+                              << std::setw(15) << result.stats.lostMessages << std::endl;
+                }
             }
         }
 

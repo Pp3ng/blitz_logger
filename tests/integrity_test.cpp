@@ -88,6 +88,7 @@ auto main(void) -> int
 
     bool integrityCheck = verifyLogIntegrity(logPath, MAX_COUNT);
     std::cout << std::format("[RESULT] Integrity check: {}\n", integrityCheck ? "PASSED" : "FAILED");
+    Logger::getInstance()->printStats();
 
     Logger::destroyInstance();
 

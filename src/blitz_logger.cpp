@@ -2,6 +2,34 @@
 #include <iostream>
 #include <sstream>
 
+thread_local size_t Logger::currentShardId = std::numeric_limits<size_t>::max(); // initialize to max
+
+size_t Logger::getShardId() noexcept
+{
+    constexpr size_t MAX_RETRY = 3;
+
+    if (currentShardId == std::numeric_limits<size_t>::max()) // never accessed before
+    {
+        // assign a shard id to thread
+        currentShardId = nextShardId.fetch_add(1, std::memory_order_relaxed) % NUM_SHARDS;
+        return currentShardId;
+    }
+
+    // when the current shard is full, try neighboring shards(spatial locality)
+    size_t shardId = currentShardId;
+    for (size_t retry = 0; retry < MAX_RETRY; ++retry)
+    {
+        if (!shards[shardId].isFull())
+        {
+            return shardId;
+        }
+        shardId = (shardId + 1) % NUM_SHARDS;
+    }
+
+    // if all retries fail, randomly select a new shard
+    return nextShardId.fetch_add(1, std::memory_order_relaxed) % NUM_SHARDS;
+}
+
 // default constructor
 Logger::Logger() : config(Config{}), running(true)
 {
@@ -9,121 +37,147 @@ Logger::Logger() : config(Config{}), running(true)
 
 void Logger::processLogs(std::stop_token st)
 {
-    // batch size chosen to balance memory usage and throughput
-    constexpr size_t BATCH_SIZE = 4096;
-
-    // pre-allocate buffers to avoid frequent reallocations
+    constexpr size_t BATCH_SIZE = 16384; // 16KB
     std::vector<LogMessage> batchBuffer;
     batchBuffer.reserve(BATCH_SIZE);
 
-    // allocate 1MB for each output buffer
     std::vector<char> fileBuffer;
     fileBuffer.reserve(1024 * 1024);
     std::vector<char> consoleBuffer;
     consoleBuffer.reserve(1024 * 1024);
 
-    // lambda to process a batch of messages
-    auto processBuffer = [&](std::span<LogMessage> buffer)
-    {
-        if (buffer.empty())
-            return;
+    size_t currentShard = 0;
+    size_t emptyIterations = 0;
 
-        // clear buffers for reuse
-        fileBuffer.clear();
-        consoleBuffer.clear();
-
-        // process each message in the batch
-        for (const auto &msg : buffer)
-        {
-            // handle file output
-            if (config.fileOutput)
-            {
-                formatLogMessage(msg, fileBuffer);
-                fileBuffer.push_back('\n');
-            }
-
-            // handle console output with optional colors
-            if (config.consoleOutput)
-            {
-                if (config.useColors)
-                {
-                    // add color prefix
-                    std::string_view levelColor = getLevelColor(msg.level);
-                    consoleBuffer.insert(consoleBuffer.end(), levelColor.begin(), levelColor.end());
-
-                    // format message
-                    formatLogMessage(msg, consoleBuffer);
-
-                    // add color reset and newline
-                    consoleBuffer.insert(consoleBuffer.end(), COLORS[0], COLORS[0] + strlen(COLORS[0]));
-                    consoleBuffer.push_back('\n');
-                }
-                else
-                {
-                    formatLogMessage(msg, consoleBuffer);
-                    consoleBuffer.push_back('\n');
-                }
-            }
-        }
-
-        // write file buffer if needed
-        if (config.fileOutput && logFile.is_open() && !fileBuffer.empty())
-        {
-            logFile.write(fileBuffer.data(), fileBuffer.size());
-            logFile.flush();
-            currentFileSize += fileBuffer.size();
-            rotateLogFileIfNeeded();
-        }
-
-        // write console buffer if needed
-        if (config.consoleOutput && !consoleBuffer.empty())
-        {
-            std::cout.write(consoleBuffer.data(), consoleBuffer.size());
-            std::cout.flush();
-        }
-    };
-
-    // main processing loop
     while (!st.stop_requested())
     {
+        bool messagesProcessed = false;
         LogMessage msg;
-        // collect messages until batch is full or queue is empty
-        while (batchBuffer.size() < BATCH_SIZE && buffer.pop(msg))
+
+        while (batchBuffer.size() < BATCH_SIZE &&
+               shards[currentShard].pop(msg))
         {
             batchBuffer.push_back(std::move(msg));
+            messagesProcessed = true;
+        }
+
+        if (!messagesProcessed)
+        {
+            currentShard = (currentShard + 1) % NUM_SHARDS;
+            emptyIterations++;
+
+            if (emptyIterations >= NUM_SHARDS)
+            {
+                emptyIterations = 0;
+                if (batchBuffer.empty())
+                {
+                    std::this_thread::sleep_for(std::chrono::microseconds(100));
+                    continue;
+                }
+            }
+        }
+        else
+        {
+            emptyIterations = 0;
         }
 
         if (!batchBuffer.empty())
         {
-            processBuffer(std::span<LogMessage>(batchBuffer.data(), batchBuffer.size()));
+            processMessageBatch(batchBuffer, fileBuffer, consoleBuffer);
             batchBuffer.clear();
-        }
-        else
-        {
-            // sleep briefly when no messages are available
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            fileBuffer.clear();
+            consoleBuffer.clear();
         }
     }
 
-    // process remaining messages before shutdown
-    LogMessage msg;
-    while (buffer.pop(msg))
+    drainRemainingMessages(batchBuffer, fileBuffer, consoleBuffer);
+}
+
+void Logger::processMessageBatch(
+    const std::vector<LogMessage> &batch,
+    std::vector<char> &fileBuffer,
+    std::vector<char> &consoleBuffer)
+{
+    for (const auto &msg : batch)
     {
-        batchBuffer.push_back(std::move(msg));
-        if (batchBuffer.size() >= BATCH_SIZE)
+        if (config.fileOutput)
         {
-            processBuffer(std::span<LogMessage>(batchBuffer.data(), batchBuffer.size()));
-            batchBuffer.clear();
+            formatLogMessage(msg, fileBuffer);
+            fileBuffer.push_back('\n');
+        }
+
+        if (config.consoleOutput)
+        {
+            if (config.useColors)
+            {
+                const char *color = getLevelColor(msg.level);
+                consoleBuffer.insert(consoleBuffer.end(),
+                                     color, color + std::strlen(color));
+            }
+
+            formatLogMessage(msg, consoleBuffer);
+
+            if (config.useColors)
+            {
+                consoleBuffer.insert(consoleBuffer.end(),
+                                     COLORS[COLOR_RESET],
+                                     COLORS[COLOR_RESET] + std::strlen(COLORS[COLOR_RESET]));
+            }
+            consoleBuffer.push_back('\n');
         }
     }
 
-    // process final batch if any messages remain
-    if (!batchBuffer.empty())
+    if (config.fileOutput && !fileBuffer.empty())
     {
-        processBuffer(std::span<LogMessage>(batchBuffer.data(), batchBuffer.size()));
+        logFile.write(fileBuffer.data(), fileBuffer.size());
+        currentFileSize += fileBuffer.size();
+        rotateLogFileIfNeeded();
+    }
+
+    if (config.consoleOutput && !consoleBuffer.empty())
+    {
+        std::cout.write(consoleBuffer.data(), consoleBuffer.size());
+        std::cout.flush();
     }
 }
 
+void Logger::drainRemainingMessages(
+    std::vector<LogMessage> &batchBuffer,
+    std::vector<char> &fileBuffer,
+    std::vector<char> &consoleBuffer)
+{
+    for (size_t i = 0; i < NUM_SHARDS; ++i)
+    {
+        LogMessage msg;
+        while (shards[i].pop(msg))
+        {
+            batchBuffer.push_back(std::move(msg));
+            if (batchBuffer.size() >= 4096)
+            {
+                processMessageBatch(batchBuffer, fileBuffer, consoleBuffer);
+                batchBuffer.clear();
+                fileBuffer.clear();
+                consoleBuffer.clear();
+            }
+        }
+    }
+
+    if (!batchBuffer.empty())
+    {
+        processMessageBatch(batchBuffer, fileBuffer, consoleBuffer);
+    }
+}
+
+void Logger::updateShardStats(size_t shardId, bool pushSuccess)
+{
+    auto &stats = shardStats[shardId];
+    stats.pushAttempts.fetch_add(1, std::memory_order_relaxed);
+
+    if (!pushSuccess)
+    {
+        stats.pushFailures.fetch_add(1, std::memory_order_relaxed);
+    }
+}
 void Logger::formatLogMessage(const LogMessage &msg, std::vector<char> &buffer) noexcept
 {
     // estimate required space to minimize reallocations
@@ -358,6 +412,49 @@ void Logger::destroyInstance()
     instance.reset();
 }
 
+void Logger::printStats() const
+{
+    std::cout << "\n══════════════ Logger Statistics ══════════════\n\n";
+
+    size_t totalAttempts = 0;
+    size_t totalFailures = 0;
+
+    // print header
+    std::cout << std::setw(10) << "Shard"
+              << std::setw(15) << "Success"
+              << std::setw(15) << "Failures"
+              << std::setw(15) << "Rate(%)" << "\n";
+    std::cout << std::string(55, '-') << "\n";
+
+    // print shard details
+    for (size_t i = 0; i < NUM_SHARDS; ++i)
+    {
+        const auto &stats = shardStats[i];
+        auto attempts = stats.pushAttempts.load();
+        auto failures = stats.pushFailures.load();
+        auto successes = attempts - failures;
+
+        std::cout << std::format("Shard {:<2}{:>15}{:>15}{:>14.1f}\n",
+                                 i,
+                                 successes,
+                                 failures,
+                                 attempts > 0 ? (successes * 100.0 / attempts) : 100.0);
+
+        totalAttempts += attempts;
+        totalFailures += failures;
+    }
+
+    // print summary
+    std::cout << std::string(55, '-') << "\n";
+    std::cout << std::format("{:>8}{:>15}{:>15}{:>14.1f}\n",
+                             "Total",
+                             totalAttempts - totalFailures,
+                             totalFailures,
+                             totalAttempts > 0 ? ((totalAttempts - totalFailures) * 100.0 / totalAttempts) : 100.0);
+
+    std::cout << "\n═══════════════════════════════════════════════\n";
+}
+
 Logger::~Logger()
 {
     try
@@ -375,6 +472,6 @@ Logger::~Logger()
     }
     catch (...)
     {
-        // Ignore exceptions in destructor
+        // ignore exceptions in destructor
     }
 }

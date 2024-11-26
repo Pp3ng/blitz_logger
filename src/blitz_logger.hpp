@@ -104,21 +104,21 @@ private:
         ~LogMessage() = default;
     };
 
-    // ring buffer implementation
-    static constexpr size_t BUFFER_SIZE = 1 << 17; // 2^17 = 131,072
-
-    struct alignas(64) RingBuffer
+    static constexpr size_t FULL_THRESHOLD = 0.8f; // 80%
+    // shard buffer
+    struct alignas(64) BufferShard
     {
-        alignas(64) std::array<LogMessage, BUFFER_SIZE> messages;
-        alignas(64) std::atomic<size_t> head{0}; // cache line 1
-        alignas(64) std::atomic<size_t> tail{0}; // cache line 2
+        static constexpr size_t SHARD_SIZE = 1 << 18; // 2^18 = 262,144(256KB)
+        alignas(64) std::array<LogMessage, SHARD_SIZE> messages;
+        alignas(64) std::atomic<size_t> head{0};
+        alignas(64) std::atomic<size_t> tail{0};
 
-        bool push(LogMessage &&msg)
+        bool push(LogMessage &&msg) noexcept
         {
             auto current_tail = tail.load(std::memory_order_relaxed);
-            auto next_tail = (current_tail + 1) & (BUFFER_SIZE - 1);
+            auto next_tail = (current_tail + 1) & (SHARD_SIZE - 1);
 
-            if (next_tail == head.load(std::memory_order_relaxed))
+            if (next_tail == head.load(std::memory_order_relaxed)) // judge whether the shard is full
             {
                 if (next_tail == head.load(std::memory_order_acquire))
                 {
@@ -131,7 +131,7 @@ private:
             return true;
         }
 
-        bool pop(LogMessage &msg)
+        bool pop(LogMessage &msg) noexcept
         {
             auto current_head = head.load(std::memory_order_relaxed);
 
@@ -144,11 +144,50 @@ private:
             }
 
             msg = std::move(messages[current_head]);
-            head.store((current_head + 1) & (BUFFER_SIZE - 1),
-                       std::memory_order_release);
+            head.store((current_head + 1) & (SHARD_SIZE - 1), std::memory_order_release);
             return true;
         }
+
+        bool isFull() const noexcept // judge whether the shard is full(based on threshold)
+        {
+            auto current_tail = tail.load(std::memory_order_relaxed);
+            auto current_head = head.load(std::memory_order_relaxed);
+
+            size_t used;
+            if (current_tail >= current_head)
+            {
+                used = current_tail - current_head;
+            }
+            else
+            {
+                used = SHARD_SIZE - (current_head - current_tail);
+            }
+
+            return (static_cast<float>(used) / SHARD_SIZE) >= FULL_THRESHOLD;
+        }
     };
+
+    static constexpr size_t NUM_SHARDS = 32;    // 32 shards (256KB * 32 = 8MB)
+    std::array<BufferShard, NUM_SHARDS> shards; // shards array
+    std::atomic<size_t> nextShardId{0};
+    static thread_local size_t currentShardId;
+
+    struct alignas(64) ShardStats
+    {
+        std::atomic<size_t> pushAttempts{0};
+        std::atomic<size_t> pushFailures{0};
+        std::atomic<size_t> maxSize{0};
+    };
+    std::array<ShardStats, NUM_SHARDS> shardStats;
+
+    size_t getShardId() noexcept;
+    void processMessageBatch(const std::vector<LogMessage> &batch,
+                             std::vector<char> &fileBuffer,
+                             std::vector<char> &consoleBuffer);
+    void drainRemainingMessages(std::vector<LogMessage> &batchBuffer,
+                                std::vector<char> &fileBuffer,
+                                std::vector<char> &consoleBuffer);
+    void updateShardStats(size_t shardId, bool pushSuccess);
 
     // terminal colors
     static constexpr std::array<const char *, 10> COLORS = {
@@ -178,7 +217,6 @@ private:
 
     // member variables
     Config config;
-    RingBuffer buffer;
     mutable std::shared_mutex configMutex; // for config changes
     std::ofstream logFile;
     std::jthread loggerThread;
@@ -203,6 +241,7 @@ public:
     void configure(const Config &cfg);
     void setLogLevel(Level level);
     void setModuleName(std::string_view module);
+    void printStats() const;
     friend std::unique_ptr<Logger> std::make_unique<Logger>();
 
     // log method
@@ -219,14 +258,29 @@ public:
                 level,
                 Context(loc)};
 
-            constexpr int MAX_RETRIES = 100;
-            int retries = 0;
-            while (!buffer.push(std::move(msg)))
+            const size_t originalShardId = getShardId();
+            size_t currentShard = originalShardId;
+            bool messageLogged = false;
+
+            // until message is logged
+            while (!messageLogged)
             {
-                if (++retries > MAX_RETRIES)
+                for (size_t attempt = 0; attempt < NUM_SHARDS; ++attempt)
                 {
-                    std::this_thread::yield();
-                    retries = 0;
+                    if (shards[currentShard].push(std::move(msg)))
+                    {
+                        updateShardStats(currentShard, true);
+                        messageLogged = true;
+                        break;
+                    }
+
+                    updateShardStats(currentShard, false);
+                    currentShard = (currentShard + 1) % NUM_SHARDS;
+                }
+
+                if (!messageLogged)
+                {
+                    std::this_thread::sleep_for(std::chrono::microseconds(100));
                 }
             }
         }
