@@ -75,8 +75,8 @@ The following diagram illustrates the high-level architecture of Blitz Logger:
 #include "blitz_logger.hpp"
 
 auto main() -> int {
-    // Use default configuration
-    Logger::getInstance();
+    // Initialize with default configuration
+    Logger::initialize(Logger::Config{});
 
     // Log messages with different levels
     LOG_INFO("Application started");
