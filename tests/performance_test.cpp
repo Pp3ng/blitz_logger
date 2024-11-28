@@ -13,8 +13,7 @@ struct TestConfig
     static constexpr size_t DEFAULT_MESSAGE_COUNT = 1'000'000;
     static constexpr int REPEAT_COUNT = 5;
     static constexpr std::array<size_t, 4> THREAD_COUNTS = {2, 4, 8, 16};
-    static constexpr std::array<size_t, 2> MESSAGE_SIZES = {64, 256};
-    static constexpr std::array<size_t, 3> BUFFER_SIZES = {1 << 16, 1 << 17, 1 << 18};
+    static constexpr std::array<size_t, 3> MESSAGE_SIZES = {64, 128, 256};
 };
 
 // performance statistics structure
