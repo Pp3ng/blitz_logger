@@ -2,7 +2,6 @@
 #include <numeric>
 #include <cmath>
 #include <random>
-#include <sys/resource.h>
 #include <iomanip>
 
 using namespace std::chrono_literals;
@@ -11,8 +10,8 @@ using namespace std::chrono_literals;
 struct TestConfig
 {
     static constexpr size_t DEFAULT_MESSAGE_COUNT = 1'000'000;
-    static constexpr int REPEAT_COUNT = 5;
-    static constexpr std::array<size_t, 4> THREAD_COUNTS = {2, 4, 8, 16};
+    static constexpr int REPEAT_COUNT = 3;
+    static constexpr std::array<size_t, 5> THREAD_COUNTS = {1, 2, 4, 8, 16};
     static constexpr std::array<size_t, 3> MESSAGE_SIZES = {64, 128, 256};
 };
 
@@ -23,59 +22,15 @@ struct PerformanceStats
     double stdDevThroughput{0.0};
     double avgLatency{0.0};
     double stdDevLatency{0.0};
-    double cpuUsage{0.0};
-    size_t memoryUsage{0};
-    size_t lostMessages{0};
 };
 
-// store test results
+// test result structure
 struct TestResult
 {
     size_t threadCount;
     size_t messageSize;
     PerformanceStats stats;
 };
-
-// cpu usage monitor class
-class CpuMonitor
-{
-    struct timespec startTime
-    {
-    };
-    clock_t startClock{};
-
-public:
-    void start()
-    {
-        clock_gettime(CLOCK_REALTIME, &startTime);
-        startClock = clock();
-    }
-
-    double getUsage()
-    {
-        struct timespec endTime
-        {
-        };
-        clock_gettime(CLOCK_REALTIME, &endTime);
-        clock_t endClock = clock();
-
-        double realTime = (endTime.tv_sec - startTime.tv_sec) +
-                          (endTime.tv_nsec - startTime.tv_nsec) / 1e9;
-        double cpuTime = static_cast<double>(endClock - startClock) / CLOCKS_PER_SEC;
-
-        return (cpuTime / realTime) * 100.0;
-    }
-};
-
-// get current memory usage in KB
-size_t getCurrentMemoryUsage()
-{
-    struct rusage usage
-    {
-    };
-    getrusage(RUSAGE_SELF, &usage);
-    return usage.ru_maxrss;
-}
 
 // calculate standard deviation
 double calculateStdDev(const std::vector<double> &values, double mean)
@@ -117,295 +72,224 @@ std::string formatNumber(double number)
 void warmUp(Logger *logger)
 {
     logger->setModuleName("Warmup");
-    for (size_t i = 0; i < 10000; ++i)
+    for (size_t i = 0; i < 50000; ++i)
     {
         LOG_INFO("warmup message #{}", i);
     }
-    std::this_thread::sleep_for(2000ms);
+
+    std::this_thread::sleep_for(3000ms);
 }
 
 // cool down period
 void coolDown()
 {
-    std::this_thread::sleep_for(2000ms);
+    std::this_thread::sleep_for(5000ms);
 }
 
-// single thread performance test
-PerformanceStats singleThreadTest(size_t messageCount, size_t messageSize)
+// perform thread test
+PerformanceStats performTest(size_t messageCount, size_t threadCount, size_t messageSize)
 {
     auto logger = Logger::getInstance();
     logger->setLogLevel(Logger::Level::INFO);
-    logger->setModuleName("SingleThread");
+    logger->setModuleName(threadCount == 1 ? "SingleThread" : "MultiThread");
 
-    std::cout << "\n=== Single thread test ===" << std::endl;
-    std::cout << "Message count: " << messageCount << std::endl;
-    std::cout << "Message size: " << messageSize << " bytes" << std::endl;
-
-    std::vector<double> throughputs;
-    std::vector<double> latencies;
-    CpuMonitor cpuMonitor;
-    size_t initialMemory = getCurrentMemoryUsage();
-    size_t peakMemory = initialMemory;
-
-    std::string testMessage = generateRandomMessage(messageSize);
-
-    for (int repeat = 0; repeat < TestConfig::REPEAT_COUNT; ++repeat)
-    {
-        warmUp(logger);
-
-        cpuMonitor.start();
-        auto startTime = std::chrono::high_resolution_clock::now();
-
-        for (size_t i = 0; i < messageCount; ++i)
-        {
-            auto msgStart = std::chrono::high_resolution_clock::now();
-            LOG_INFO("{} - {}", testMessage, i);
-            auto msgEnd = std::chrono::high_resolution_clock::now();
-
-            auto latency = std::chrono::duration<double, std::micro>(msgEnd - msgStart).count();
-            latencies.push_back(latency);
-
-            size_t currentMemory = getCurrentMemoryUsage();
-            peakMemory = std::max(peakMemory, currentMemory);
-        }
-
-        auto endTime = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration<double>(endTime - startTime).count();
-
-        double throughput = static_cast<double>(messageCount) / duration;
-        throughputs.push_back(throughput);
-
-        coolDown();
-    }
-
-    // calculate statistics
-    PerformanceStats stats;
-    stats.avgThroughput = std::accumulate(throughputs.begin(), throughputs.end(), 0.0) / throughputs.size();
-    stats.stdDevThroughput = calculateStdDev(throughputs, stats.avgThroughput);
-    stats.avgLatency = std::accumulate(latencies.begin(), latencies.end(), 0.0) / latencies.size();
-    stats.stdDevLatency = calculateStdDev(latencies, stats.avgLatency);
-    stats.cpuUsage = cpuMonitor.getUsage();
-    stats.memoryUsage = peakMemory - initialMemory;
-
-    // output results
-    std::cout << "Average throughput: " << formatNumber(stats.avgThroughput) << " messages/sec (±"
-              << formatNumber(stats.stdDevThroughput) << ")" << std::endl;
-    std::cout << "Average latency: " << formatNumber(stats.avgLatency) << " μs (±"
-              << formatNumber(stats.stdDevLatency) << ")" << std::endl;
-    std::cout << "CPU usage: " << formatNumber(stats.cpuUsage) << "%" << std::endl;
-    std::cout << "Memory usage: " << stats.memoryUsage << " KB" << std::endl;
-
-    return stats;
-}
-
-// multi-thread performance test
-PerformanceStats multiThreadTest(size_t messageCount, size_t threadCount, size_t messageSize)
-{
-    auto logger = Logger::getInstance();
-    logger->setLogLevel(Logger::Level::INFO);
-
-    std::cout << "\n=== Multi thread test ===" << std::endl;
+    std::cout << "\n=== Thread test ===" << std::endl;
     std::cout << "Thread count: " << threadCount << std::endl;
     std::cout << "Messages per thread: " << messageCount << std::endl;
     std::cout << "Message size: " << messageSize << " bytes" << std::endl;
 
     std::vector<double> throughputs;
-    std::vector<double> latencies;
-    CpuMonitor cpuMonitor;
-    std::atomic<size_t> initialMemory = getCurrentMemoryUsage();
-    std::atomic<size_t> peakMemory = initialMemory.load();
-    std::atomic<size_t> lostMessages{0};
-
     std::string testMessage = generateRandomMessage(messageSize);
+    std::vector<std::vector<double>> allThreadLatencies;
+
+    // batch size for latency sampling
+    const size_t SAMPLE_INTERVAL = 100;
 
     for (int repeat = 0; repeat < TestConfig::REPEAT_COUNT; ++repeat)
     {
         warmUp(logger);
 
         std::vector<std::thread> threads;
-        threads.reserve(threadCount);
-
         std::vector<std::vector<double>> threadLatencies(threadCount);
         std::atomic<bool> startFlag{false};
+        std::atomic<size_t> completedThreads{0};
 
-        cpuMonitor.start();
-        auto startTime = std::chrono::high_resolution_clock::now();
+        // pre-reserve space for latencies with sampling
+        for (auto &latencies : threadLatencies)
+        {
+            latencies.reserve(messageCount / SAMPLE_INTERVAL + 1);
+        }
 
-        // launch threads
+        // create threads but don't start logging yet
         for (size_t t = 0; t < threadCount; ++t)
         {
-            threads.emplace_back([t, messageCount, &testMessage, &threadLatencies,
-                                  &startFlag, &lostMessages, &peakMemory, logger]()
+            threads.emplace_back([&, t]()
                                  {
-                logger->setModuleName(std::format("Thread-{}", t));
+                std::vector<double>& latencies = threadLatencies[t];
                 
                 // wait for start signal
-                while (!startFlag.load(std::memory_order_relaxed)) {
+                while (!startFlag.load(std::memory_order_acquire)) {
                     std::this_thread::yield();
                 }
 
                 for (size_t i = 0; i < messageCount; ++i) {
-                    auto msgStart = std::chrono::high_resolution_clock::now();
-                    
-                    try {
-                        LOG_INFO("{} - Thread {} message #{}", testMessage, t, i);
-                    } catch (...) {
-                        lostMessages.fetch_add(1, std::memory_order_relaxed);
-                        continue;
-                    }
+                    if (i % SAMPLE_INTERVAL == 0) {
+                        // measure latency only for sampled messages
+                        auto msgStart = std::chrono::steady_clock::now();
+                        LOG_INFO("Thread {} - {} - {}", t, testMessage, i);
+                        auto msgEnd = std::chrono::steady_clock::now();
 
-                    auto msgEnd = std::chrono::high_resolution_clock::now();
-                    auto latency = std::chrono::duration<double, std::micro>(msgEnd - msgStart).count();
-                    threadLatencies[t].push_back(latency);
-
-                    size_t currentMemory = getCurrentMemoryUsage();
-                    size_t expected = peakMemory.load(std::memory_order_relaxed);
-                    while (currentMemory > expected && 
-                           !peakMemory.compare_exchange_weak(expected, currentMemory, 
-                                                           std::memory_order_relaxed)) {
-                        // retry until success
+                        auto latency = std::chrono::duration<double, std::micro>(
+                            msgEnd - msgStart).count();
+                        if (latency < 1000.0) { // filter out outliers above 1ms
+                            latencies.push_back(latency);
+                        }
+                    } else {
+                        // regular logging without latency measurement
+                        LOG_INFO("Thread {} - {} - {}", t, testMessage, i);
                     }
-                } });
+                }
+                ++completedThreads; });
         }
 
-        // synchronize thread start
+        // start all threads simultaneously
+        auto startTime = std::chrono::steady_clock::now();
         startFlag.store(true, std::memory_order_release);
 
-        // wait for all threads to complete
         for (auto &thread : threads)
         {
             thread.join();
         }
 
-        auto endTime = std::chrono::high_resolution_clock::now();
+        auto endTime = std::chrono::steady_clock::now();
         auto duration = std::chrono::duration<double>(endTime - startTime).count();
-
-        // collect latency data from all threads
-        for (const auto &threadLatency : threadLatencies)
-        {
-            latencies.insert(latencies.end(), threadLatency.begin(), threadLatency.end());
-        }
 
         double throughput = static_cast<double>(messageCount * threadCount) / duration;
         throughputs.push_back(throughput);
+
+        // store latencies from this repeat
+        for (auto &latencies : threadLatencies)
+        {
+            allThreadLatencies.push_back(std::move(latencies));
+        }
 
         coolDown();
     }
 
     // calculate statistics
     PerformanceStats stats;
+
+    // calculate throughput statistics
     stats.avgThroughput = std::accumulate(throughputs.begin(), throughputs.end(), 0.0) / throughputs.size();
     stats.stdDevThroughput = calculateStdDev(throughputs, stats.avgThroughput);
-    stats.avgLatency = std::accumulate(latencies.begin(), latencies.end(), 0.0) / latencies.size();
-    stats.stdDevLatency = calculateStdDev(latencies, stats.avgLatency);
-    stats.cpuUsage = cpuMonitor.getUsage();
-    stats.memoryUsage = peakMemory.load() - initialMemory.load();
-    stats.lostMessages = lostMessages.load();
 
-    // output results
-    std::cout << "Average throughput: " << formatNumber(stats.avgThroughput) << " messages/sec (±"
-              << formatNumber(stats.stdDevThroughput) << ")" << std::endl;
-    std::cout << "Average latency: " << formatNumber(stats.avgLatency) << " μs (±"
-              << formatNumber(stats.stdDevLatency) << ")" << std::endl;
-    std::cout << "CPU usage: " << formatNumber(stats.cpuUsage) << "%" << std::endl;
-    std::cout << "Memory usage: " << stats.memoryUsage << " KB" << std::endl;
-    std::cout << "Lost messages: " << stats.lostMessages << std::endl;
+    // combine all latencies for overall statistics
+    std::vector<double> allLatencies;
+    size_t totalSamples = 0;
+
+    for (const auto &latencies : allThreadLatencies)
+    {
+        if (!latencies.empty())
+        {
+            std::vector<double> sortedLatencies = latencies;
+            std::sort(sortedLatencies.begin(), sortedLatencies.end());
+
+            // use middle 90% of samples
+            size_t start = sortedLatencies.size() * 0.05;
+            size_t end = sortedLatencies.size() * 0.95;
+
+            allLatencies.insert(allLatencies.end(),
+                                sortedLatencies.begin() + start,
+                                sortedLatencies.begin() + end);
+            totalSamples += end - start;
+        }
+    }
+
+    if (!allLatencies.empty())
+    {
+        stats.avgLatency = std::accumulate(allLatencies.begin(), allLatencies.end(), 0.0) / allLatencies.size();
+        stats.stdDevLatency = calculateStdDev(allLatencies, stats.avgLatency);
+    }
+
+    std::cout << "Average throughput: " << formatNumber(stats.avgThroughput)
+              << " messages/sec (±" << formatNumber(stats.stdDevThroughput) << ")" << std::endl;
+    std::cout << "Average latency: " << formatNumber(stats.avgLatency)
+              << " μs (±" << formatNumber(stats.stdDevLatency) << ")" << std::endl;
 
     return stats;
 }
 
-// main test function
-int main()
+// initialize logger configuration
+Logger::Config initializeLoggerConfig()
 {
-    try
+    Logger::Config cfg;
+    cfg.logDir = "test_logs";
+    cfg.filePrefix = "performance_test";
+    cfg.maxFileSize = 100 * 1024 * 1024; // 100MB
+    cfg.maxFiles = 5;
+    cfg.consoleOutput = false;
+    cfg.fileOutput = true;
+    cfg.showTimestamp = true;
+    cfg.showThreadId = true;
+    cfg.showSourceLocation = false;
+    cfg.showModuleName = true;
+    cfg.showFullPath = false;
+    cfg.minLevel = Logger::Level::INFO;
+    return cfg;
+}
+
+// print test results
+void printResults(const std::vector<TestResult> &results)
+{
+    std::cout << "\n============= Performance Test Summary =============" << std::endl;
+
+    for (size_t threadCount : TestConfig::THREAD_COUNTS)
     {
-        // basic logger configuration
-        Logger::Config cfg;
-        cfg.logDir = "test_logs";
-        cfg.filePrefix = "performance_test";
-        cfg.maxFileSize = 100 * 1024 * 1024; // 100MB
-        cfg.maxFiles = 5;
-        cfg.consoleOutput = false;
-        cfg.fileOutput = true;
-        cfg.showTimestamp = true;
-        cfg.showThreadId = true;
-        cfg.showSourceLocation = false;
-        cfg.showModuleName = true;
-        cfg.showFullPath = false;
-        cfg.minLevel = Logger::Level::INFO;
-
-        Logger::initialize(cfg);
-
-        std::vector<TestResult> results;
-
-        // single thread tests with different message sizes
-        for (size_t msgSize : TestConfig::MESSAGE_SIZES)
-        {
-            TestResult result{1, msgSize,
-                              singleThreadTest(TestConfig::DEFAULT_MESSAGE_COUNT, msgSize)};
-            results.push_back(result);
-        }
-
-        // multi-thread tests with different thread counts and message sizes
-        for (size_t threadCount : TestConfig::THREAD_COUNTS)
-        {
-            for (size_t msgSize : TestConfig::MESSAGE_SIZES)
-            {
-                TestResult result{threadCount, msgSize,
-                                  multiThreadTest(TestConfig::DEFAULT_MESSAGE_COUNT / threadCount, threadCount, msgSize)};
-                results.push_back(result);
-            }
-        }
-
-        std::cout << "\n============= Performance Test Summary =============" << std::endl;
-
-        std::cout << "\nSingle Thread Results:" << std::endl;
+        std::cout << "\nThread Count: " << threadCount << std::endl;
         std::cout << std::setw(15) << "Message Size"
                   << std::setw(20) << "Throughput (msg/s)"
-                  << std::setw(20) << "Latency (μs)"
-                  << std::setw(15) << "CPU (%)"
-                  << std::setw(15) << "Memory (KB)"
-                  << std::setw(15) << "Lost Msgs" << std::endl;
-        std::cout << std::string(100, '-') << std::endl;
+                  << std::setw(20) << "Latency (μs)" << std::endl;
+        std::cout << std::string(55, '-') << std::endl;
 
         for (const auto &result : results)
         {
-            if (result.threadCount == 1)
+            if (result.threadCount == threadCount)
             {
                 std::cout << std::setw(15) << result.messageSize
                           << std::setw(20) << formatNumber(result.stats.avgThroughput)
-                          << std::setw(20) << formatNumber(result.stats.avgLatency)
-                          << std::setw(15) << formatNumber(result.stats.cpuUsage)
-                          << std::setw(15) << result.stats.memoryUsage
-                          << std::setw(15) << result.stats.lostMessages << std::endl;
+                          << std::setw(20) << formatNumber(result.stats.avgLatency) << std::endl;
             }
         }
+    }
+}
 
-        std::cout << "\nMulti-Thread Results:" << std::endl;
-        for (size_t threadCount : TestConfig::THREAD_COUNTS)
+// run performance tests
+std::vector<TestResult> runPerformanceTests()
+{
+    std::vector<TestResult> results;
+
+    for (size_t threadCount : TestConfig::THREAD_COUNTS)
+    {
+        for (size_t msgSize : TestConfig::MESSAGE_SIZES)
         {
-            std::cout << "\nThread Count: " << threadCount << std::endl;
-            std::cout << std::setw(15) << "Message Size"
-                      << std::setw(20) << "Throughput (msg/s)"
-                      << std::setw(20) << "Latency (μs)"
-                      << std::setw(15) << "CPU (%)"
-                      << std::setw(15) << "Memory (KB)"
-                      << std::setw(15) << "Lost Msgs" << std::endl;
-            std::cout << std::string(100, '-') << std::endl;
-
-            for (const auto &result : results)
-            {
-                if (result.threadCount == threadCount)
-                {
-                    std::cout << std::setw(15) << result.messageSize
-                              << std::setw(20) << formatNumber(result.stats.avgThroughput)
-                              << std::setw(20) << formatNumber(result.stats.avgLatency)
-                              << std::setw(15) << formatNumber(result.stats.cpuUsage)
-                              << std::setw(15) << result.stats.memoryUsage
-                              << std::setw(15) << result.stats.lostMessages << std::endl;
-                }
-            }
+            TestResult result{threadCount, msgSize,
+                              performTest(TestConfig::DEFAULT_MESSAGE_COUNT / threadCount,
+                                          threadCount, msgSize)};
+            results.push_back(result);
         }
+    }
+
+    return results;
+}
+
+auto main() -> int
+{
+    try
+    {
+        Logger::initialize(initializeLoggerConfig());
+
+        auto results = runPerformanceTests();
+        printResults(results);
 
         std::this_thread::sleep_for(500ms);
         Logger::destroyInstance();
