@@ -1,6 +1,8 @@
 #include "blitz_logger.hpp"
 #include <iostream>
 #include <sstream>
+#include <iterator>
+#include <algorithm>
 
 thread_local size_t Logger::currentShardId = std::numeric_limits<size_t>::max(); // initialize to max
 
@@ -103,7 +105,7 @@ void Logger::processMessageBatch(
         if (config.fileOutput)
         {
             formatLogMessage(msg, fileBuffer);
-            fileBuffer.push_back('\n');
+            std::back_inserter(fileBuffer)++ = '\n';
         }
 
         if (config.consoleOutput)
@@ -111,19 +113,19 @@ void Logger::processMessageBatch(
             if (config.useColors)
             {
                 const char *color = getLevelColor(msg.level);
-                consoleBuffer.insert(consoleBuffer.end(),
-                                     color, color + std::strlen(color));
+                size_t color_len = std::strlen(color);
+                std::copy_n(color, color_len, std::back_inserter(consoleBuffer));
             }
 
             formatLogMessage(msg, consoleBuffer);
 
             if (config.useColors)
             {
-                consoleBuffer.insert(consoleBuffer.end(),
-                                     COLORS[COLOR_RESET],
-                                     COLORS[COLOR_RESET] + std::strlen(COLORS[COLOR_RESET]));
+                const char *reset = COLORS[COLOR_RESET];
+                size_t reset_len = std::strlen(reset);
+                std::copy_n(reset, reset_len, std::back_inserter(consoleBuffer));
             }
-            consoleBuffer.push_back('\n');
+            std::back_inserter(consoleBuffer)++ = '\n';
         }
     }
 
@@ -180,12 +182,26 @@ void Logger::updateShardStats(size_t shardId, bool pushSuccess)
 }
 void Logger::formatLogMessage(const LogMessage &msg, std::vector<char> &buffer) noexcept
 {
-    // estimate required space to minimize reallocations
-    // base size (256) accounts for timestamps, level, thread id etc
-    const size_t estimated_size = 256 + msg.message.size();
-    buffer.reserve(buffer.size() + estimated_size);
+    // calculate total required size to avoid reallocation
+    size_t required_size = 256 + msg.message.size(); // base size
 
-    // format timestamp if enabled
+    if (config.showTimestamp)
+        required_size += 32; // timestamp needs about 32 bytes
+    if (config.showThreadId)
+        required_size += 32; // thread id needs about 32 bytes
+    if (config.showModuleName && !msg.context.module.empty())
+        required_size += msg.context.module.size() + 3; // module name + "[] "
+    if (config.showSourceLocation)
+        required_size += msg.context.file.size() + 10; // file name + line number + "[] "
+
+    // reserve space once
+    size_t original_size = buffer.size();
+    buffer.reserve(original_size + required_size);
+
+    // use back_inserter to avoid repeated insert calls
+    auto inserter = std::back_inserter(buffer);
+
+    // format timestamp
     if (config.showTimestamp) [[likely]]
     {
         auto time = std::chrono::system_clock::to_time_t(msg.timestamp);
@@ -193,64 +209,64 @@ void Logger::formatLogMessage(const LogMessage &msg, std::vector<char> &buffer) 
                       msg.timestamp.time_since_epoch()) %
                   1000;
 
-        char time_buffer[32];
+        char time_buffer[64];
         size_t time_len = std::strftime(time_buffer, sizeof(time_buffer),
                                         "[%Y-%m-%d %H:%M:%S.", std::localtime(&time));
-        buffer.insert(buffer.end(), time_buffer, time_buffer + time_len);
 
-        char ms_buffer[8];
-        int ms_len = std::snprintf(ms_buffer, sizeof(ms_buffer),
+        // format milliseconds and closing bracket
+        int ms_len = std::snprintf(time_buffer + time_len, sizeof(time_buffer) - time_len,
                                    "%03d] ", static_cast<int>(ms.count()));
-        buffer.insert(buffer.end(), ms_buffer, ms_buffer + ms_len);
+
+        std::copy_n(time_buffer, time_len + ms_len, inserter);
     }
 
     // format log level
     const auto &level_str = LEVEL_STRINGS[static_cast<size_t>(msg.level)];
-    buffer.push_back('[');
-    buffer.insert(buffer.end(), level_str.begin(), level_str.end());
-    buffer.insert(buffer.end(), {']', ' '});
+    *inserter++ = '[';
+    std::copy(level_str.begin(), level_str.end(), inserter);
+    *inserter++ = ']';
+    *inserter++ = ' ';
 
-    // format thread id if enabled
+    // format thread id
     if (config.showThreadId) [[likely]]
     {
         char thread_buffer[32];
         int thread_len = std::snprintf(thread_buffer, sizeof(thread_buffer),
                                        "[T-%zu] ",
                                        std::hash<std::thread::id>{}(msg.context.threadId));
-        buffer.insert(buffer.end(), thread_buffer, thread_buffer + thread_len);
+        std::copy_n(thread_buffer, thread_len, inserter);
     }
 
-    // format module name if enabled and not empty
+    // format module name
     if (config.showModuleName && !msg.context.module.empty()) [[likely]]
     {
-        buffer.push_back('[');
-        buffer.insert(buffer.end(), msg.context.module.begin(), msg.context.module.end());
-        buffer.insert(buffer.end(), {']', ' '});
+        *inserter++ = '[';
+        std::copy(msg.context.module.begin(), msg.context.module.end(), inserter);
+        *inserter++ = ']';
+        *inserter++ = ' ';
     }
 
-    // format source location if enabled
+    // format source location
     if (config.showSourceLocation) [[likely]]
     {
         std::string_view file(msg.context.file);
         if (!config.showFullPath) [[likely]]
         {
-            if (auto pos = file.find_last_of("/\\"); pos != std::string_view::npos) [[likely]]
-            {
+            if (auto pos = file.find_last_of("/\\"); pos != std::string_view::npos)
                 file = file.substr(pos + 1);
-            }
         }
 
-        buffer.push_back('[');
-        buffer.insert(buffer.end(), file.begin(), file.end());
+        *inserter++ = '[';
+        std::copy(file.begin(), file.end(), inserter);
 
         char line_buffer[16];
         int line_len = std::snprintf(line_buffer, sizeof(line_buffer),
                                      ":%d] ", msg.context.line);
-        buffer.insert(buffer.end(), line_buffer, line_buffer + line_len);
+        std::copy_n(line_buffer, line_len, inserter);
     }
 
-    // append the actual message content
-    buffer.insert(buffer.end(), msg.message.begin(), msg.message.end());
+    // append message content
+    std::copy(msg.message.begin(), msg.message.end(), inserter);
 }
 
 void Logger::rotateLogFileIfNeeded()
