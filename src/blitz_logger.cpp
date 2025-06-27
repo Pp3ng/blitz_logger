@@ -4,32 +4,35 @@
 #include <iterator>
 #include <algorithm>
 
-thread_local size_t Logger::currentShardId = std::numeric_limits<size_t>::max(); // initialize to max
+Logger::BufferRegistry Logger::bufferRegistry;
 
-size_t Logger::getShardId() noexcept
+// thread local buffer
+Logger::ThreadLocalBuffer &Logger::getThreadLocalBuffer()
 {
-    constexpr size_t MAX_RETRY = 3;
+    static thread_local std::shared_ptr<ThreadLocalBuffer> localBuffer = nullptr;
 
-    if (currentShardId == std::numeric_limits<size_t>::max()) // never accessed before
+    if (!localBuffer)
     {
-        // assign a shard id to thread
-        currentShardId = nextShardId.fetch_add(1, std::memory_order_relaxed) % NUM_SHARDS;
-        return currentShardId;
-    }
+        localBuffer = std::make_shared<ThreadLocalBuffer>();
+        bufferRegistry.registerBuffer(localBuffer);
 
-    // when the current shard is full, try neighboring shards(spatial locality)
-    size_t shardId = currentShardId;
-    for (size_t retry = 0; retry < MAX_RETRY; ++retry)
-    {
-        if (!shards[shardId].isFull())
+        // register cleanup on thread exit
+        static thread_local struct ThreadCleanup
         {
-            return shardId;
-        }
-        shardId = (shardId + 1) % NUM_SHARDS;
+            std::shared_ptr<ThreadLocalBuffer> buffer;
+            ThreadCleanup(std::shared_ptr<ThreadLocalBuffer> buf) : buffer(buf) {}
+            ~ThreadCleanup()
+            {
+                if (buffer)
+                {
+                    buffer->isActive.store(false, std::memory_order_release);
+                    bufferRegistry.unregisterBuffer(buffer);
+                }
+            }
+        } cleanup(localBuffer);
     }
 
-    // if all retries fail, randomly select a new shard
-    return nextShardId.fetch_add(1, std::memory_order_relaxed) % NUM_SHARDS;
+    return *localBuffer;
 }
 
 // default constructor
@@ -37,62 +40,61 @@ Logger::Logger() : config(Config{}), running(true)
 {
 }
 
-void Logger::processLogs(std::stop_token st)
+void Logger::processLogs()
 {
-    constexpr size_t BATCH_SIZE = 16384; // 16KB
+    constexpr size_t BATCH_SIZE = 16384; // 16KB batch size
     std::vector<LogMessage> batchBuffer;
     batchBuffer.reserve(BATCH_SIZE);
 
     std::vector<char> fileBuffer;
-    fileBuffer.reserve(1024 * 1024);
+    fileBuffer.reserve(2 * 1024 * 1024); // 2MB file buffer
     std::vector<char> consoleBuffer;
-    consoleBuffer.reserve(1024 * 1024);
+    consoleBuffer.reserve(2 * 1024 * 1024); // 2MB console buffer
 
-    size_t currentShard = 0;
-    size_t emptyIterations = 0;
-
-    while (!st.stop_requested())
+    while (running.load(std::memory_order_relaxed))
     {
         bool messagesProcessed = false;
-        LogMessage msg;
+        bool anyBufferNearlyFull = false;
 
-        while (batchBuffer.size() < BATCH_SIZE &&
-               shards[currentShard].pop(msg))
+        auto buffers = bufferRegistry.getAllBuffers(); // round-robin access to all buffers
+        for (auto &buffer : buffers)
         {
-            batchBuffer.push_back(std::move(msg));
-            messagesProcessed = true;
-        }
+            if (!buffer->isActive.load(std::memory_order_relaxed))
+                continue;
 
-        if (!messagesProcessed)
-        {
-            currentShard = (currentShard + 1) % NUM_SHARDS;
-            emptyIterations++;
-
-            if (emptyIterations >= NUM_SHARDS)
+            // check if any buffer is nearly full
+            if (buffer->isNearlyFull())
             {
-                emptyIterations = 0;
-                if (batchBuffer.empty())
-                {
-                    std::this_thread::sleep_for(std::chrono::microseconds(100));
-                    continue;
-                }
+                anyBufferNearlyFull = true;
+            }
+
+            LogMessage msg;
+            size_t messagesFromThisBuffer = 0;
+            const size_t maxMessagesPerBuffer = BATCH_SIZE / std::max(buffers.size(), size_t(1));
+
+            // process messages from this buffer
+            while (messagesFromThisBuffer < maxMessagesPerBuffer &&
+                   batchBuffer.size() < BATCH_SIZE &&
+                   buffer->pop(msg))
+            {
+                batchBuffer.push_back(std::move(msg));
+                messagesProcessed = true;
+                messagesFromThisBuffer++;
             }
         }
-        else
-        {
-            emptyIterations = 0;
-        }
-
         if (!batchBuffer.empty())
         {
-            processMessageBatch(batchBuffer, fileBuffer, consoleBuffer);
-            batchBuffer.clear();
-            fileBuffer.clear();
-            consoleBuffer.clear();
+            processAndClearBatch(batchBuffer, fileBuffer, consoleBuffer);
+        } // adaptive sleep: short sleep for high pressure, longer for low pressure
+        if (!messagesProcessed)
+        {
+            auto sleep_duration = anyBufferNearlyFull ? std::chrono::microseconds(10) : std::chrono::microseconds(100);
+            std::this_thread::sleep_for(sleep_duration);
         }
     }
 
-    drainRemainingMessages(batchBuffer, fileBuffer, consoleBuffer);
+    // drain remaining messages before shutdown
+    drainAllBuffers(batchBuffer, fileBuffer, consoleBuffer);
 }
 
 void Logger::processMessageBatch(
@@ -128,7 +130,6 @@ void Logger::processMessageBatch(
             std::back_inserter(consoleBuffer)++ = '\n';
         }
     }
-
     if (config.fileOutput && !fileBuffer.empty())
     {
         logFile.write(fileBuffer.data(), fileBuffer.size());
@@ -139,46 +140,48 @@ void Logger::processMessageBatch(
     if (config.consoleOutput && !consoleBuffer.empty())
     {
         std::cout.write(consoleBuffer.data(), consoleBuffer.size());
-        std::cout.flush();
     }
 }
 
-void Logger::drainRemainingMessages(
+void Logger::drainAllBuffers(
     std::vector<LogMessage> &batchBuffer,
     std::vector<char> &fileBuffer,
     std::vector<char> &consoleBuffer)
 {
-    for (size_t i = 0; i < NUM_SHARDS; ++i)
+    auto buffers = bufferRegistry.getAllBuffers();
+    for (auto &buffer : buffers)
     {
         LogMessage msg;
-        while (shards[i].pop(msg))
+        while (buffer->pop(msg))
         {
             batchBuffer.push_back(std::move(msg));
             if (batchBuffer.size() >= 4096)
             {
-                processMessageBatch(batchBuffer, fileBuffer, consoleBuffer);
-                batchBuffer.clear();
-                fileBuffer.clear();
-                consoleBuffer.clear();
+                processAndClearBatch(batchBuffer, fileBuffer, consoleBuffer);
             }
         }
     }
+    processAndClearBatch(batchBuffer, fileBuffer, consoleBuffer);
 
-    if (!batchBuffer.empty())
+    // final flush to ensure all data is written to disk
+    if (config.fileOutput && logFile.is_open())
     {
-        processMessageBatch(batchBuffer, fileBuffer, consoleBuffer);
+        logFile.flush();
     }
 }
 
-void Logger::updateShardStats(size_t shardId, bool pushSuccess)
+void Logger::updateThreadStats()
 {
-    auto &stats = shardStats[shardId];
-    stats.pushAttempts.fetch_add(1, std::memory_order_relaxed);
+    auto threadId = std::this_thread::get_id();
 
-    if (!pushSuccess)
+    std::lock_guard<std::mutex> lock(statsMapMutex);
+    auto [it, inserted] = threadStatsMap.try_emplace(threadId, std::make_shared<ThreadStats>());
+
+    if (inserted)
     {
-        stats.pushFailures.fetch_add(1, std::memory_order_relaxed);
+        it->second->threadId = threadId;
     }
+    it->second->messagesProduced.fetch_add(1, std::memory_order_relaxed);
 }
 void Logger::formatLogMessage(const LogMessage &msg, std::vector<char> &buffer) noexcept
 {
@@ -272,9 +275,7 @@ void Logger::formatLogMessage(const LogMessage &msg, std::vector<char> &buffer) 
 void Logger::rotateLogFileIfNeeded()
 {
     if (!config.fileOutput || currentFileSize < config.maxFileSize)
-    {
         return;
-    }
 
     logFile.close();
 
@@ -372,11 +373,11 @@ void Logger::initialize(const Config &cfg)
         instance = std::make_unique<Logger>();
         instance->configure(cfg); // configure logger
         
-        instance->loggerThread = std::jthread([instance = instance.get()](std::stop_token st) {
-            instance->processLogs(st);
+        instance->loggerThread = std::thread([instance = instance.get()]() {
+            instance->processLogs();
         });
         
-        instance->log(std::source_location::current(), Level::INFO, "Logger initialized"); });
+        instance->log(std::source_location::current(), Level::INFO, "Logger initialized with thread-local buffers"); });
 }
 
 void Logger::configure(const Config &cfg)
@@ -420,7 +421,7 @@ void Logger::setLogLevel(Level level)
 
 void Logger::setModuleName(std::string_view module)
 {
-    Context ::getThreadLocalModuleName() = std::string(module);
+    Context::getThreadLocalModuleName() = std::string(module);
 }
 
 void Logger::destroyInstance()
@@ -432,59 +433,69 @@ void Logger::printStats() const
 {
     std::cout << "\n══════════════ Logger Statistics ══════════════\n\n";
 
-    size_t totalAttempts = 0;
-    size_t totalFailures = 0;
+    size_t totalProduced = 0;
+    size_t activeThreads = 0;
+    std::cout << std::setw(15) << "Thread ID"
+              << std::setw(15) << "Produced" << "\n";
+    std::cout << std::string(30, '-') << "\n";
 
-    // print header
-    std::cout << std::setw(10) << "Shard"
-              << std::setw(15) << "Success"
-              << std::setw(15) << "Failures"
-              << std::setw(15) << "Rate(%)" << "\n";
-    std::cout << std::string(55, '-') << "\n";
-
-    // print shard details
-    for (size_t i = 0; i < NUM_SHARDS; ++i)
     {
-        const auto &stats = shardStats[i];
-        auto attempts = stats.pushAttempts.load();
-        auto failures = stats.pushFailures.load();
-        auto successes = attempts - failures;
+        std::lock_guard<std::mutex> lock(statsMapMutex);
+        for (const auto &[threadId, stats] : threadStatsMap)
+        {
+            auto produced = stats->messagesProduced.load();
 
-        std::cout << std::format("Shard {:<2}{:>15}{:>15}{:>14.1f}\n",
-                                 i,
-                                 successes,
-                                 failures,
-                                 attempts > 0 ? (successes * 100.0 / attempts) : 100.0);
+            std::cout << std::format("{:>15x}{:>15}\n",
+                                     std::hash<std::thread::id>{}(threadId),
+                                     produced);
 
-        totalAttempts += attempts;
-        totalFailures += failures;
+            totalProduced += produced;
+            activeThreads++;
+        }
     }
+    auto buffers = bufferRegistry.getAllBuffers();
+    std::cout << std::string(30, '-') << "\n";
+    std::cout << std::format("Active Threads: {}\n", activeThreads);
+    std::cout << std::format("Active Buffers: {}\n", buffers.size());
 
-    // print summary
-    std::cout << std::string(55, '-') << "\n";
-    std::cout << std::format("{:>8}{:>15}{:>15}{:>14.1f}\n",
+    std::cout << std::string(30, '-') << "\n";
+    std::cout << std::format("{:>15}{:>15}\n",
                              "Total",
-                             totalAttempts - totalFailures,
-                             totalFailures,
-                             totalAttempts > 0 ? ((totalAttempts - totalFailures) * 100.0 / totalAttempts) : 100.0);
+                             totalProduced);
+}
 
-    std::cout << "\n═══════════════════════════════════════════════\n";
+void Logger::processAndClearBatch(
+    std::vector<LogMessage> &batchBuffer,
+    std::vector<char> &fileBuffer,
+    std::vector<char> &consoleBuffer)
+{
+    if (!batchBuffer.empty())
+    {
+        processMessageBatch(batchBuffer, fileBuffer, consoleBuffer);
+        batchBuffer.clear();
+        fileBuffer.clear();
+        consoleBuffer.clear();
+    }
 }
 
 Logger::~Logger()
 {
     try
     {
-        running = false;
+        running.store(false, std::memory_order_release);
+
         if (loggerThread.joinable())
         {
-            loggerThread.request_stop();
             loggerThread.join();
         }
         if (logFile.is_open())
         {
+            logFile.flush(); // final flush before closing
             logFile.close();
         }
+
+        std::lock_guard<std::mutex> lock(statsMapMutex);
+        threadStatsMap.clear();
     }
     catch (...)
     {

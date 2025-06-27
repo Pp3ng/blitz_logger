@@ -119,7 +119,6 @@ perf_stats perform_test(size_t message_count, size_t thread_count, size_t messag
         std::vector<std::thread> threads;
         std::vector<std::vector<double>> thread_latencies(thread_count);
         std::barrier sync_point(thread_count + 1);
-        std::atomic<bool> start_flag{false};
 
         // create threads
         for (size_t t = 0; t < thread_count; ++t)

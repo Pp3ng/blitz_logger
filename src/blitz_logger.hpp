@@ -17,6 +17,8 @@
 #include <thread>
 #include <vector>
 #include <cstring>
+#include <list>
+#include <unordered_map>
 
 class Logger
 {
@@ -104,90 +106,116 @@ private:
         ~LogMessage() = default;
     };
 
-    static constexpr size_t FULL_THRESHOLD = 0.8f; // 80%
-    // shard buffer
-    struct alignas(64) BufferShard
+    // thread-local buffer
+    struct alignas(64) ThreadLocalBuffer
     {
-        static constexpr size_t SHARD_SIZE = 1 << 18; // 2^18 = 262,144(256KB)
-        alignas(64) std::array<LogMessage, SHARD_SIZE> messages;
+        static constexpr size_t BUFFER_SIZE = 1 << 16;
+
+        alignas(64) std::array<LogMessage, BUFFER_SIZE> messages;
         alignas(64) std::atomic<size_t> head{0};
         alignas(64) std::atomic<size_t> tail{0};
+        alignas(64) std::atomic<bool> isActive{true};
+        std::thread::id ownerThreadId;
 
-        bool push(LogMessage &&msg) noexcept
+        ThreadLocalBuffer() : ownerThreadId(std::this_thread::get_id()) {}
+
+        void push(LogMessage &&msg) noexcept
         {
-            auto current_tail = tail.load(std::memory_order_relaxed);
-            auto next_tail = (current_tail + 1) & (SHARD_SIZE - 1);
-
-            if (next_tail == head.load(std::memory_order_relaxed)) // judge whether the shard is full
+            while (true)
             {
-                if (next_tail == head.load(std::memory_order_acquire))
-                {
-                    return false;
-                }
-            }
+                auto current_tail = tail.load(std::memory_order_relaxed);
+                auto next_tail = (current_tail + 1) & (BUFFER_SIZE - 1);
 
-            new (&messages[current_tail]) LogMessage(std::move(msg));
-            tail.store(next_tail, std::memory_order_release);
-            return true;
+                if (next_tail != head.load(std::memory_order_acquire))
+                {
+                    new (&messages[current_tail]) LogMessage(std::move(msg));
+                    tail.store(next_tail, std::memory_order_release);
+                    return;
+                }
+
+                // if buffer is full, yield and retry
+                std::this_thread::yield();
+            }
         }
 
         bool pop(LogMessage &msg) noexcept
         {
             auto current_head = head.load(std::memory_order_relaxed);
+            auto current_tail = tail.load(std::memory_order_acquire);
 
-            if (current_head == tail.load(std::memory_order_relaxed))
-            {
-                if (current_head == tail.load(std::memory_order_acquire))
-                {
-                    return false;
-                }
-            }
+            if (current_head == current_tail)
+                return false; // buffer empty
 
             msg = std::move(messages[current_head]);
-            head.store((current_head + 1) & (SHARD_SIZE - 1), std::memory_order_release);
+            head.store((current_head + 1) & (BUFFER_SIZE - 1), std::memory_order_release);
             return true;
         }
 
-        bool isFull() const noexcept // judge whether the shard is full(based on threshold)
+        bool isEmpty() const noexcept
         {
-            auto current_tail = tail.load(std::memory_order_relaxed);
-            auto current_head = head.load(std::memory_order_relaxed);
+            return head.load(std::memory_order_relaxed) == tail.load(std::memory_order_relaxed);
+        }
 
-            size_t used;
-            if (current_tail >= current_head)
-            {
-                used = current_tail - current_head;
-            }
-            else
-            {
-                used = SHARD_SIZE - (current_head - current_tail);
-            }
+        size_t size() const noexcept
+        {
+            auto h = head.load(std::memory_order_relaxed);
+            auto t = tail.load(std::memory_order_relaxed);
+            return (t >= h) ? (t - h) : (BUFFER_SIZE - (h - t));
+        }
 
-            return (static_cast<float>(used) / SHARD_SIZE) >= FULL_THRESHOLD;
+        // check if buffer is nearly full (90% capacity)
+        bool isNearlyFull() const noexcept
+        {
+            return size() > (BUFFER_SIZE * 0.9);
         }
     };
 
-    static constexpr size_t NUM_SHARDS = 32;    // 32 shards (256KB * 32 = 8MB)
-    std::array<BufferShard, NUM_SHARDS> shards; // shards array
-    std::atomic<size_t> nextShardId{0};
-    static thread_local size_t currentShardId;
-
-    struct alignas(64) ShardStats
+    struct BufferRegistry
     {
-        std::atomic<size_t> pushAttempts{0};
-        std::atomic<size_t> pushFailures{0};
-        std::atomic<size_t> maxSize{0};
-    };
-    std::array<ShardStats, NUM_SHARDS> shardStats;
+        std::mutex registryMutex;
+        std::list<std::shared_ptr<ThreadLocalBuffer>> buffers;
 
-    size_t getShardId() noexcept;
+        void registerBuffer(std::shared_ptr<ThreadLocalBuffer> buffer)
+        {
+            std::lock_guard<std::mutex> lock(registryMutex);
+            buffers.push_back(buffer);
+        }
+
+        void unregisterBuffer(std::shared_ptr<ThreadLocalBuffer> buffer)
+        {
+            std::lock_guard<std::mutex> lock(registryMutex);
+            buffers.remove(buffer);
+        }
+
+        std::vector<std::shared_ptr<ThreadLocalBuffer>> getAllBuffers()
+        {
+            std::lock_guard<std::mutex> lock(registryMutex);
+            return std::vector<std::shared_ptr<ThreadLocalBuffer>>(buffers.begin(), buffers.end());
+        }
+    };
+
+    static ThreadLocalBuffer &getThreadLocalBuffer();
+
+    static BufferRegistry bufferRegistry;
+    struct ThreadStats
+    {
+        std::atomic<size_t> messagesProduced{0};
+        std::thread::id threadId;
+    };
+
+    std::unordered_map<std::thread::id, std::shared_ptr<ThreadStats>> threadStatsMap;
+    mutable std::mutex statsMapMutex;
+
+    void updateThreadStats();
     void processMessageBatch(const std::vector<LogMessage> &batch,
                              std::vector<char> &fileBuffer,
                              std::vector<char> &consoleBuffer);
-    void drainRemainingMessages(std::vector<LogMessage> &batchBuffer,
-                                std::vector<char> &fileBuffer,
-                                std::vector<char> &consoleBuffer);
-    void updateShardStats(size_t shardId, bool pushSuccess);
+    void processAndClearBatch(std::vector<LogMessage> &batchBuffer,
+                              std::vector<char> &fileBuffer,
+                              std::vector<char> &consoleBuffer);
+    void drainAllBuffers(std::vector<LogMessage> &batchBuffer,
+                         std::vector<char> &fileBuffer,
+                         std::vector<char> &consoleBuffer);
 
     // terminal colors
     static constexpr std::array<const char *, 10> COLORS = {
@@ -219,7 +247,7 @@ private:
     Config config;
     mutable std::shared_mutex configMutex; // for config changes
     std::ofstream logFile;
-    std::jthread loggerThread;
+    std::thread loggerThread;
     std::atomic<bool> running{true};
     std::atomic<size_t> currentFileSize{0};
     static inline std::unique_ptr<Logger> instance;
@@ -227,7 +255,7 @@ private:
 
     // private member functions
     Logger();
-    void processLogs(std::stop_token st);
+    void processLogs();
     void rotateLogFileIfNeeded();
     void cleanOldLogs();
     void formatLogMessage(const LogMessage &msg, std::vector<char> &buffer) noexcept;
@@ -258,31 +286,12 @@ public:
                 level,
                 Context(loc)};
 
-            const size_t originalShardId = getShardId();
-            size_t currentShard = originalShardId;
-            bool messageLogged = false;
+            // get thread-local buffer
+            auto &buffer = getThreadLocalBuffer();
 
-            // until message is logged
-            while (!messageLogged)
-            {
-                for (size_t attempt = 0; attempt < NUM_SHARDS; ++attempt)
-                {
-                    if (shards[currentShard].push(std::move(msg)))
-                    {
-                        updateShardStats(currentShard, true);
-                        messageLogged = true;
-                        break;
-                    }
-
-                    updateShardStats(currentShard, false);
-                    currentShard = (currentShard + 1) % NUM_SHARDS;
-                }
-
-                if (!messageLogged)
-                {
-                    std::this_thread::sleep_for(std::chrono::microseconds(100));
-                }
-            }
+            // push message to thread-local buffer
+            buffer.push(std::move(msg));
+            updateThreadStats();
         }
         catch (const std::exception &e)
         {

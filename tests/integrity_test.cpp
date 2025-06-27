@@ -3,7 +3,6 @@
 #include <set>
 #include <ranges>
 
-// function to verify log integrity
 [[nodiscard]]
 bool verifyLogIntegrity(const std::string &logPath, int expectedCount)
 {
@@ -24,7 +23,6 @@ bool verifyLogIntegrity(const std::string &logPath, int expectedCount)
             numbers.insert(std::stoi(matches[1]));
     }
 
-    // Check for missing or unexpected numbers
     auto missingNumbers =
         std::views::iota(1, expectedCount + 1) | std::views::filter([&numbers](int n)
                                                                     { return !numbers.contains(n); });
@@ -52,7 +50,6 @@ void logMessages(int maxCount)
     {
         LOG_INFO("Number: {}", i);
 
-        // Show progress every 100,000 messages
         if (i % 100000 == 0)
             std::cout << std::format("\r[PROGRESS] Writing: {}/{}...", i, maxCount) << std::flush;
     }
@@ -79,18 +76,20 @@ auto main(void) -> int
 
     const int MAX_COUNT = 10'000'000;
 
-    // Log messages
+    // log messages
     logMessages(MAX_COUNT);
 
-    // Verify log integrity
+    Logger::getInstance()->printStats();
+
+    // destroy logger instance
+    Logger::destroyInstance();
+
+    // verify log integrity
     std::string logPath = std::format("{}/{}.log", cfg.logDir, cfg.filePrefix);
     std::cout << "\n[INFO] Verifying log integrity...\n";
 
     bool integrityCheck = verifyLogIntegrity(logPath, MAX_COUNT);
     std::cout << std::format("[RESULT] Integrity check: {}\n", integrityCheck ? "PASSED" : "FAILED");
-    Logger::getInstance()->printStats();
-
-    Logger::destroyInstance();
 
     return integrityCheck ? 0 : 1;
 }

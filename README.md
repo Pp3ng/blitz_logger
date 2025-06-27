@@ -7,12 +7,12 @@ A modern, thread-safe, and feature-rich C++ logging library designed for high pe
 | Feature Category     | Description                                                                                                                     |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | Log Levels           | Supports TRACE, DEBUG, INFO, WARNING, ERROR, FATAL and STEP                                                                     |
-| Asynchronous Logging | Non-blocking logging with sharded lock-free ring buffers (32 shards × 256KB = 8MB total buffer)                                 |
+| Asynchronous Logging | Non-blocking logging with thread-local lock-free ring buffers (64KB per thread)                                                 |
 | File Management      | • Automatic log file rotation based on file size<br>• Configurable maximum file size and count<br>• Timestamp-based file naming |
 | Flexible Output      | • Simultaneous console and file output<br>• Colored console output support<br>• Customizable output format                      |
 | Rich Context         | • Timestamps<br>• Thread IDs<br>• Source location (file, line, function)<br>• Module names                                      |
-| Thread Safety        | • Thread-local shard allocation<br>• Lock-free implementation<br>• Spatial locality optimization                                |
-| Performance          | • Batch processing (16KB batch size)<br>• Statistics monitoring<br>• Adaptive shard selection                                   |
+| Thread Safety        | • Thread-local buffer allocation<br>• Lock-free implementation<br>• Zero contention between threads                             |
+| Performance          | • Batch processing (16KB batch size)<br>• Statistics monitoring<br>• Adaptive processing with pressure detection                |
 
 ## Architecture
 
@@ -22,36 +22,44 @@ The following diagram illustrates the high-level architecture of Blitz Logger:
         [Thread 1]    [Thread 2]   [Thread 3]  ... (Producers)
                │             │             │
                ▼             ▼             ▼
-┌─────────────────────────────────────────────────────────┐
-│                  Logging Interface                      │
-│  [TRACE][DEBUG][INFO][WARN][ERROR][FATAL][STEP]         │
-└───────────────────────────────┬─────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│                  Logging Interface                   │
+│  [TRACE][DEBUG][INFO][WARN][ERROR][FATAL][STEP]      │
+└───────────────────────────────┬──────────────────────┘
                                 │
                                 ▼
-┌────────────────────────────────────────────────────────┐
-│              Sharded Lock-free Ring Buffers            │
-│  ┌─────────────┐ ┌─────────────┐      ┌─────────────┐  │
-│  │  Shard 0    │ │  Shard 1    │ ...  │  Shard 31   │  │
-│  │ [H]    [T]  │ │ [H]    [T]  │      │ [H]    [T]  │  │
-│  │ [msg][msg]  │ │ [msg][msg]  │      │ [msg][msg]  │  │
-│  └─────────────┘ └─────────────┘      └─────────────┘  │
-└────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│             Thread-Local Lock-free Buffers           │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐  │
+│  │  Thread 1    │ │  Thread 2    │ │  Thread N    │  │
+│  │   Buffer     │ │   Buffer     │ │   Buffer     │  │
+│  │ [H]     [T]  │ │ [H]     [T]  │ │ [H]     [T]  │  │
+│  │ [msg][msg]   │ │ [msg][msg]   │ │ [msg][msg]   │  │
+│  │   (64KB)     │ │   (64KB)     │ │   (64KB)     │  │
+│  └──────────────┘ └──────────────┘ └──────────────┘  │
+└──────────────────────────────────────────────────────┘
                                 │
                                 ▼
+                ┌─────────────────────────────┐
+                │    Buffer Registry          │
+                │  (Manages all buffers)      │
+                └─────────────┬───────────────┘
+                              │
+                              ▼
                    [Background Logger Thread] (Consumer)
-                                │
-                      ┌─────────┴──────────┐
-                      ▼                    ▼
-              [Console Output]         [File Output]
-                   │                       │
-                   ▼                       ▼
-            [Colored Output]         [Log File Rotation]
-                                     /           \
-                                    /             \
-                           [Current Log]    [History Logs]
-                                                  │
-                                                  ▼
-                                         [Auto Cleanup]
+                              │
+                    ┌─────────┴──────────┐
+                    ▼                    ▼
+            [Console Output]         [File Output]
+                 │                       │
+                 ▼                       ▼
+          [Colored Output]         [Log File Rotation]
+                                   /           \
+                                  /             \
+                         [Current Log]    [History Logs]
+                                                │
+                                                ▼
+                                       [Auto Cleanup]
 
 ```
 
@@ -153,6 +161,7 @@ void initializeSystem() {
 ## Future Work
 
 - [x] Lockfree queue for reducing contention
+- [x] Thread-local buffers for true SPSC design
 - [ ] Support more output objects(Network, Database, etc)
 - [ ] Support compression for log files
 - [ ] Optimize memory allocation
